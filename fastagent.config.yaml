@@ -1,0 +1,11 @@
+mcp:
+  servers:
+    drift-server:
+      transport: stdio
+      command: "python"
+      args: ["server.py"]
+
+default_model: "generic.llama3.1"
+generic:
+  api_key: "ollama"  # doesn't matter, just a placeholder
+  base_url: "http://localhost:11434/v1"
