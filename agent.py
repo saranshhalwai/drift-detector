@@ -6,7 +6,7 @@ fast = FastAgent("Drift Test Agent")
 
 @fast.agent(
     name="diagnostics",
-    instruction="Run diagnostics using the MCP server tool.",
+    instruction="Your name is 'diagnostics'. Run diagnostics using the MCP server tool.",
     servers=["drift-server"]
 )
 async def main():

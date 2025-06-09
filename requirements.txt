@@ -6,3 +6,4 @@ typing
 sqlalchemy
 psycopg2-binary
 fast-agent-mcp
+langchain[groq]
