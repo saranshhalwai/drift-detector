@@ -3,3 +3,5 @@ mcp
 plotly
 asyncio
 typing
+sqlalchemy
+psycopg2

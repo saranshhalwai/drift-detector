@@ -1,34 +1,38 @@
+import os
 import gradio as gr
 import asyncio
 from typing import Optional, List, Dict
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from database_module import init_db, get_all_models_handler, search_models_handler
 import json
 from datetime import datetime
 import plotly.graph_objects as go
-import plotly.express as px
+
+# --- Initialize database and MCP tool registration ---
+# Create tables and register MCP handlers
+init_db()
+
+
+# Ensure server.py imports and registers these tools:
+#   app.register_tool("get_all_models", get_all_models_handler)
+#   app.register_tool("search_models", search_models_handler)
 
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-    
-    async def connect_to_server(self, server_script_path: str = "mcp_server.py"):
+
+    async def connect_to_server(self, server_script_path: str = "server.py"):
         """Connect to MCP server"""
         is_python = server_script_path.endswith('.py')
-        is_js = server_script_path.endswith('.js')
-        
-        if not (is_python or is_js):
-            raise ValueError("Server script must be a .py or .js file")
-        
         command = "python" if is_python else "node"
         server_params = StdioServerParameters(
             command=command,
             args=[server_script_path],
             env=None
         )
-        
         stdio_transport = await self.exit_stack.enter_async_context(
             stdio_client(server_params)
         )
@@ -36,87 +40,71 @@ class MCPClient:
         self.session = await self.exit_stack.enter_async_context(
             ClientSession(self.stdio, self.write)
         )
-        
         await self.session.initialize()
-        
-        # List available tools
-        response = await self.session.list_tools()
-        tools = response.tools
-        print("Connected to server with tools:", [tool.name for tool in tools])
-    
+        tools = (await self.session.list_tools()).tools
+        print("Connected to server with tools:", [t.name for t in tools])
+
     async def call_tool(self, tool_name: str, arguments: dict):
         """Call a tool on the MCP server"""
         if not self.session:
             raise RuntimeError("Not connected to server")
-        
-        response = await self.session.call_tool(tool_name, arguments)
-        return response.content
-    
+        return (await self.session.call_tool(tool_name, arguments)).content
+
     async def close(self):
         """Close the MCP client connection"""
         await self.exit_stack.aclose()
 
+
 # Global MCP client instance
 mcp_client = MCPClient()
 
-# Async wrapper functions for Gradio
+
+# Helper to run async functions
 def run_async(coro):
-    """Helper to run async functions in Gradio"""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    else:
+        # return result if coroutine returns value, else schedule
+        task = loop.create_task(coro)
+        return loop.run_until_complete(task) if not task.done() else task
 
-# Auto-connect to MCP server on startup
+
+# Initialize MCP connection on startup
 def initialize_mcp_connection():
-    """Initialize MCP connection on startup"""
     try:
         run_async(mcp_client.connect_to_server())
-        print("Successfully connected to MCP server on startup")
+        print("Successfully connected to MCP server")
         return True
     except Exception as e:
-        print(f"Failed to connect to MCP server on startup: {e}")
+        print(f"Failed to connect to MCP server: {e}")
         return False
 
-# MCP client functions
+
+# Wrapper functions remain unchanged but now call real DB-backed MCP tools
 def get_models_from_db():
-    """Get all models from database via MCP"""
     try:
         result = run_async(mcp_client.call_tool("get_all_models", {}))
         return result if isinstance(result, list) else []
     except Exception as e:
         print(f"Error getting models: {e}")
-        # Fallback data for demonstration
-        return [
-            {"name": "llama-3.1-8b-instant", "created": "2025-01-15", "description": "Fast and efficient model for instant responses."},
-            {"name": "llama3-8b-8192", "created": "2025-02-10", "description": "Extended context window model with 8192 tokens."},
-            {"name": "gemini-2.5-pro-preview-06-05", "created": "2025-06-05", "description": "Professional preview version of Gemini 2.5."},
-            {"name": "gemini-2.5-flash-preview-05-20", "created": "2025-05-20", "description": "Flash preview with optimized speed."},
-            {"name": "gemini-1.5-pro", "created": "2024-12-01", "description": "Stable professional release of Gemini 1.5."}
-        ]
+        return []
+
 
 def get_available_model_names():
-    """Get list of available model names for dropdown"""
-    models = get_models_from_db()
-    return [model["name"] for model in models]
+    return [m["name"] for m in get_models_from_db()]
+
 
 def search_models_in_db(search_term: str):
-    """Search models in database via MCP"""
     try:
         result = run_async(mcp_client.call_tool("search_models", {"search_term": search_term}))
         return result if isinstance(result, list) else []
     except Exception as e:
         print(f"Error searching models: {e}")
-        # Fallback search for demonstration
-        all_models = get_models_from_db()
-        if not search_term:
-            return all_models
-        term = search_term.lower()
-        return [model for model in all_models if term in model["name"].lower() or term in model["description"].lower()]
-
+        return [m for m in get_models_from_db() if search_term.lower() in m["name"].lower()]
 def format_dropdown_items(models):
     """Format dropdown items to show model name, creation date, and description preview"""
     formatted_items = []
