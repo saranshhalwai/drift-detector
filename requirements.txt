@@ -5,3 +5,4 @@ asyncio
 typing
 sqlalchemy
 psycopg2
+fast-agent-mcp
