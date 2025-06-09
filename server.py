@@ -80,6 +80,26 @@ async def list_tools() -> List[types.Tool]:
     ]
 
 
+
+# === Sampling Wrapper ===
+async def sample(messages: list[types.SamplingMessage], max_tokens=600) -> CreateMessageResult:
+    return await app.request_context.session.create_message(
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=0.7
+    )
+
+
+# === Baseline File Paths ===
+def get_baseline_path(model_name):
+    return os.path.join(DATA_DIR, f"{model_name}_baseline.json")
+
+
+def get_response_path(model_name):
+    return os.path.join(DATA_DIR, f"{model_name}_latest.json")
+
+
+
 # === Core Logic ===
 async def run_initial_diagnostics(arguments: Dict[str, Any]) -> List[types.TextContent]:
     model = arguments["model"]
@@ -91,7 +111,19 @@ async def run_initial_diagnostics(arguments: Dict[str, Any]) -> List[types.TextC
     # 2. Ask the target LLM (client)
     answers = await sample(questions)
 
+
     # 3. Persist baseline
+
+    # 1. Ask the server's internal LLM to generate a questionnaire
+
+    questions = genratequestionnaire(model, arguments["model_capabilities"])  # Server-side trusted LLM
+    answers = []
+    for q in questions:
+        a = await sample([q])
+        answers.append(a)
+
+    # 3. Save Q/A pair
+
     with open(get_baseline_path(model), "w") as f:
         json.dump({
             "questions": [m.content.text for m in questions],
@@ -118,15 +150,30 @@ async def check_drift(arguments: Dict[str, Any]) -> List[types.TextContent]:
     ]
     old_answers = data["answers"]
 
+
     # 1. Get fresh answers
     new_msgs    = await sample(questions)
     new_answers = [m.content.text for m in new_msgs]
+
+    # 1. Ask the model again
+    new_answers_msgs = []
+    for q in questions:
+        a = await sample([q])
+        new_answers_msgs.append(a)
+    new_answers = [m.content.text for m in new_answers_msgs]
+
 
     # 2. Grade for drift
     grading     = await gradeanswers(old_answers, new_answers)
     drift_score = grading[0].content.text.strip()
 
+
     # 3. Save latest
+    grading_response = gradeanswers(old_answers, new_answers)
+    drift_score = grading_response[0].content.text.strip()
+
+    # 3. Save the response
+
     with open(get_response_path(model), "w") as f:
         json.dump({
             "new_answers": new_answers,
