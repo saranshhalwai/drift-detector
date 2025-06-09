@@ -5,7 +5,16 @@ from typing import Optional, List, Dict
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from database_module import init_db, get_all_models_handler, search_models_handler
+# Modify imports section to include all required tools
+from database_module import (
+    init_db, 
+    # get_all_models_handler, 
+    # search_models_handler,
+    # save_model_handler,
+    # get_model_details_handler,
+    # calculate_drift_handler,
+    # get_drift_history_handler
+)
 import json
 from datetime import datetime
 import plotly.graph_objects as go
@@ -19,6 +28,7 @@ init_db()
 #   app.register_tool("get_all_models", get_all_models_handler)
 #   app.register_tool("search_models", search_models_handler)
 
+# Replace the existing MCP client class with this updated version
 class MCPClient:
     def __init__(self):
         self.session: Optional[ClientSession] = None
@@ -26,33 +36,46 @@ class MCPClient:
 
     async def connect_to_server(self, server_script_path: str = "server.py"):
         """Connect to MCP server"""
-        is_python = server_script_path.endswith('.py')
-        command = "python" if is_python else "node"
-        server_params = StdioServerParameters(
-            command=command,
-            args=[server_script_path],
-            env=None
-        )
-        stdio_transport = await self.exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
-        )
-        await self.session.initialize()
-        tools = (await self.session.list_tools()).tools
-        print("Connected to server with tools:", [t.name for t in tools])
+        try:
+            server_params = StdioServerParameters(
+                command="python",
+                args=[server_script_path],
+                env=None
+            )
+            stdio_transport = await self.exit_stack.enter_async_context(
+                stdio_client(server_params)
+            )
+            self.stdio, self.write = stdio_transport
+            self.session = await self.exit_stack.enter_async_context(
+                ClientSession(self.stdio, self.write)
+            )
+            await self.session.initialize()
+            
+            # Get available tools from server
+            tools_response = await self.session.list_tools()
+            available_tools = [t.name for t in tools_response.tools]
+            print("Connected to server with tools:", available_tools)
+            
+            return True
+        except Exception as e:
+            print(f"Failed to connect to MCP server: {e}")
+            return False
 
     async def call_tool(self, tool_name: str, arguments: dict):
         """Call a tool on the MCP server"""
         if not self.session:
-            raise RuntimeError("Not connected to server")
-        return (await self.session.call_tool(tool_name, arguments)).content
+            raise RuntimeError("Not connected to MCP server")
+        try:
+            response = await self.session.call_tool(tool_name, arguments)
+            return response.content
+        except Exception as e:
+            print(f"Error calling tool {tool_name}: {e}")
+            raise
 
     async def close(self):
         """Close the MCP client connection"""
-        await self.exit_stack.aclose()
+        if self.session:
+            await self.exit_stack.aclose()
 
 
 # Global MCP client instance
@@ -72,6 +95,28 @@ def run_async(coro):
         task = loop.create_task(coro)
         return loop.run_until_complete(task) if not task.done() else task
 
+def run_initial_diagnostics(model_name: str, capabilities: str):
+    """Run initial diagnostics for a new model"""
+    try:
+        result = run_async(mcp_client.call_tool("run_initial_diagnostics", {
+            "model": model_name,
+            "model_capabilities": capabilities
+        }))
+        return result
+    except Exception as e:
+        print(f"Error running diagnostics: {e}")
+        return None
+
+def check_model_drift(model_name: str):
+    """Check drift for existing model"""
+    try:
+        result = run_async(mcp_client.call_tool("check_drift", {
+            "model": model_name
+        }))
+        return result
+    except Exception as e:
+        print(f"Error checking drift: {e}")
+        return None
 
 # Initialize MCP connection on startup
 def initialize_mcp_connection():
@@ -274,7 +319,21 @@ def save_new_model(selected_model_name, original_prompt, enhanced_prompt, choice
         ]
     
     final_prompt = enhanced_prompt if choice == "Keep Enhanced" else original_prompt
-    status = save_model_to_db(selected_model_name, final_prompt)
+    
+    try:
+        # Save the model first
+        status = save_model_to_db(selected_model_name, final_prompt)
+        
+        # Run initial diagnostics
+        diagnostic_result = run_initial_diagnostics(
+            selected_model_name,
+            f"System Prompt: {final_prompt}\nCapabilities: General language model capabilities"
+        )
+        
+        if diagnostic_result:
+            status = f"{status}\n{diagnostic_result[0].text if isinstance(diagnostic_result, list) else diagnostic_result}"
+    except Exception as e:
+        status = f"Error saving model: {e}"
     
     # Update dropdown choices
     updated_models = get_models_from_db()
@@ -297,7 +356,7 @@ def chatbot_response(message, history, dropdown_value):
     model_details = get_model_details(model_name)
     system_prompt = model_details.get("system_prompt", "")
     
-    # Simulate response (replace with actual LLM call)
+    # Simulate response (replace with actual LLM call) //Work here
     response = f"[{model_name}] Response to: {message}\n(Using system prompt: {system_prompt[:50]}...)"
     history.append([message, response])
     return history, ""
@@ -308,11 +367,18 @@ def calculate_drift(dropdown_value):
         return "Please select a model first"
     
     model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
-    result = calculate_drift_via_mcp(model_name)
-    drift_score = result.get("drift_score", 0.0)
-    message = result.get("message", "")
     
-    return f"Drift Score: {drift_score:.3f}\n{message}"
+    # First try the drift calculation tool
+    try:
+        result = check_model_drift(model_name)
+        if result and isinstance(result, list):
+            return "\n".join(msg.text for msg in result)
+    except Exception as e:
+        print(f"Error calculating drift: {e}")
+    
+    # Fallback to the simpler drift calculation if needed
+    result = calculate_drift_handler({"model_name": model_name})
+    return f"Drift Score: {result.get('drift_score', 0.0):.3f}\n{result.get('message', '')}"
 
 def refresh_drift_history(dropdown_value):
     """Refresh drift history for selected model"""
@@ -372,6 +438,7 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
             # Create New Model Section (Initially Hidden)
             with gr.Group(visible=False) as create_new_section:
                 gr.Markdown("#### Create New Model")
+                #work here to show options to select model
                 new_model_name = gr.Dropdown(
                     choices=[],
                     label="Select Model Name",
@@ -526,4 +593,4 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch(share=True)
+    demo.launch()
