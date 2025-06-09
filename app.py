@@ -197,17 +197,6 @@ def save_model_to_db(model_name: str, system_prompt: str):
         print(f"Error saving model: {e}")
         return f"Error saving model: {e}"
 
-def calculate_drift_via_mcp(model_name: str):
-    """Calculate drift for model via MCP"""
-    try:
-        result = run_async(mcp_client.call_tool("calculate_drift", {"model_name": model_name}))
-        return result
-    except Exception as e:
-        print(f"Error calculating drift: {e}")
-        import random
-        drift_score = round(random.uniform(0.05, 0.25), 3)
-        return {"drift_score": drift_score, "message": f"Drift calculated and saved for {model_name}"}
-
 def get_drift_history_from_db(model_name: str):
     """Get drift history from database via MCP"""
     try:
@@ -276,10 +265,6 @@ def on_model_select(dropdown_value):
     
     actual_model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
     return actual_model_name, actual_model_name
-
-def toggle_create_new():
-    """Toggle create new model section visibility"""
-    return gr.update(visible=True)
 
 def cancel_create_new():
     """Cancel create new model"""
@@ -375,9 +360,10 @@ def calculate_drift(dropdown_value):
             return "\n".join(msg.text for msg in result)
     except Exception as e:
         print(f"Error calculating drift: {e}")
+        return f"Error calculating drift from server side: {e}"
     
     # Fallback to the simpler drift calculation if needed
-    result = calculate_drift_handler({"model_name": model_name})
+    # result = calculate_drift_handler({"model_name": model_name})
     return f"Drift Score: {result.get('drift_score', 0.0):.3f}\n{result.get('message', '')}"
 
 def refresh_drift_history(dropdown_value):
