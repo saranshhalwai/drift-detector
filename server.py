@@ -75,7 +75,7 @@ async def list_tools() -> list[types.Tool]:
 
 
 # === Sampling Wrapper ===
-async def sample(messages: list[types.SamplingMessage], max_tokens=300) -> CreateMessageResult:
+async def sample(messages: list[types.SamplingMessage], max_tokens=600) -> CreateMessageResult:
     return await app.request_context.session.create_message(
         messages=messages,
         max_tokens=max_tokens,
@@ -103,10 +103,11 @@ async def run_initial_diagnostics(arguments: dict[str, Any]) -> list[types.TextC
 
     # 1. Ask the server's internal LLM to generate a questionnaire
 
-    questions = await genratequestionnaire(model, arguments["model_capabilities"])  # Server-side trusted LLM
-
-    # 2. Send questionnaire to target LLM (i.e., the client)
-    answers = await sample(questions)  # Client model's answers
+    questions = genratequestionnaire(model, arguments["model_capabilities"])  # Server-side trusted LLM
+    answers = []
+    for q in questions:
+        a = await sample([q])
+        answers.append(a)
 
     # 3. Save Q/A pair
     with open(get_baseline_path(model), "w") as f:
@@ -136,11 +137,14 @@ async def check_drift(arguments: dict[str, str]) -> list[types.TextContent]:
         old_answers = data["answers"]
 
     # 1. Ask the model again
-    new_answers_msgs = await sample(questions)
+    new_answers_msgs = []
+    for q in questions:
+        a = await sample([q])
+        new_answers_msgs.append(a)
     new_answers = [m.content.text for m in new_answers_msgs]
 
 
-    grading_response = await gradeanswers(old_answers, new_answers)
+    grading_response = gradeanswers(old_answers, new_answers)
     drift_score = grading_response[0].content.text.strip()
 
     # 3. Save the response
