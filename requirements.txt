@@ -1,0 +1,5 @@
+gradio
+mcp
+plotly
+asyncio
+typing
