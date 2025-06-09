@@ -11,8 +11,14 @@ license: mit
 ---
 
 # Drift Detector
-Drift Detector is an MCP server, designed to detect drift in LLM performance over time. 
-This implementation is intended as a proof of concept and is not intended for production use.
+Drift Detector is an MCP server, designed to detect drift in LLM performance over time by using the power of the **sampling** functionality of MCP. 
+This implementation is intended as a **proof of concept** and is **NOT intended** for production use without significant changes.
+
+## The Idea
+
+The drift detector is a server that can be connected to any LLM client that supports the MCP sampling functionality. 
+It allows you to monitor the performance of your LLM models over time, detecting any drift in their behavior.
+This is particularly useful for applications where the model's performance may change due to various factors, such as changes in the data distribution, model updates, or other external influences.
 
 ## How to run
 
@@ -64,5 +70,48 @@ The gradio interface in [app.py](app.py) is an example dashboard which allows us
 
 ### Drift Detector Server
 
-The Drift Detector server is implemented using the MCP python SDK
-    
+The Drift Detector server is implemented using the MCP python SDK.
+It exposes the following tools:
+
+1. **run_initial_diagnostics**
+   - **Purpose**: Establishes a baseline for model behavior using adaptive sampling techniques
+   - **Parameters**:
+     - `model`: The name of the model to run diagnostics on
+     - `model_capabilities`: Full description of the model's capabilities and special features
+   - **Sampling Process**:
+     - First generates a tailored questionnaire based on model-specific capabilities
+     - Collects responses by sampling the target model with controlled parameters (temperature=0.7)
+     - Each question is processed individually to ensure proper context isolation
+     - Baseline samples are stored as paired question-answer JSON records for future comparison
+   - **Output**: Confirmation message indicating successful baseline creation
+
+2. **check_drift**
+   - **Purpose**: Measures potential drift by comparative sampling against the baseline
+   - **Parameters**:
+     - `model`: The name of the model to check for drift
+   - **Sampling Process**:
+     - Retrieves the original questions from the baseline
+     - Re-samples the model with identical questions using the same sampling parameters
+     - Maintains consistent context conditions to ensure fair comparison
+     - Uses differential analysis to compare semantic and functional differences between sample sets
+   - **Drift Evaluation**:
+     - Calculates a numerical drift score based on answer divergence
+     - Provides threshold-based alerts when drift exceeds acceptable limits (score > 50)
+     - Stores the latest sample responses for audit and trend analysis
+
+## Flow
+
+The intended flow is as follows:
+1. When the client contacts the server for the first time, it will run the `run_initial_diagnostics` tool.
+2. The server will generate a tailored questionnaire based on the model's capabilities.
+3. This questionnaire will be used to collect responses from the model, establishing a baseline for future comparisons.
+4. Once the baseline is established, the server will store the paired question-answer JSON records.
+5. The client can then use the `check_drift` tool to measure potential drift in the model's performance.
+6. The server will retrieve the original questions from the baseline and re-sample the model with identical questions.
+7. The server will maintain consistent context conditions to ensure fair comparison.
+8. If significant drift is detected (score > 50), the server will provide an alert and store the latest sample responses for audit and trend analysis.
+9. The client can visualize the drift data through the Gradio interface, allowing users to track changes in model performance over time.
+
+
+
+

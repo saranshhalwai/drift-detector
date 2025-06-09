@@ -2,9 +2,10 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from .db import SessionLocal
-from .models import ModelEntry, DriftEntry
+from .models import ModelEntry, DriftEntry, DiagnosticData
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+import json
 
 
 def get_all_models_handler(_: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -111,3 +112,98 @@ def get_drift_history_handler(params: Dict[str, Any]) -> List[Dict[str, Any]]:
             {"date": e.date.isoformat(), "drift_score": e.drift_score}
             for e in entries
         ]
+
+
+# === New functions for drift detection database operations ===
+
+def save_diagnostic_data(
+    model_name: str,
+    questions: list,
+    answers: list,
+    is_baseline: bool = False
+) -> None:
+    """
+    Save diagnostic questions and answers to the database
+    """
+    with SessionLocal() as session:
+        # Check if model exists, create if not
+        model = session.query(ModelEntry).filter_by(name=model_name).first()
+        if not model:
+            model = ModelEntry(
+                name=model_name,
+                created=datetime.utcnow().date(),
+                description=""
+            )
+            session.add(model)
+
+        # Create new diagnostic entry
+        diagnostic = DiagnosticData(
+            model_name=model_name,
+            is_baseline=1 if is_baseline else 0,
+            questions=questions,
+            answers=answers,
+            created=datetime.utcnow()
+        )
+        session.add(diagnostic)
+        session.commit()
+
+
+def get_baseline_diagnostics(model_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve baseline diagnostics for a model
+    """
+    with SessionLocal() as session:
+        baseline = session.query(DiagnosticData)\
+            .filter_by(model_name=model_name, is_baseline=1)\
+            .order_by(DiagnosticData.created.desc())\
+            .first()
+
+        if not baseline:
+            return None
+
+        return {
+            "questions": baseline.questions,
+            "answers": baseline.answers,
+            "created": baseline.created.isoformat()
+        }
+
+
+def save_drift_score(model_name: str, drift_score: str) -> None:
+    """
+    Save drift score to database
+    """
+    # Try to convert score to float if possible
+    try:
+        score_float = float(drift_score)
+    except ValueError:
+        score_float = None
+
+    with SessionLocal() as session:
+        entry = DriftEntry(
+            model_name=model_name,
+            date=datetime.utcnow(),
+            drift_score=score_float
+        )
+        session.add(entry)
+        session.commit()
+
+
+def register_model_with_capabilities(model_name: str, capabilities: str) -> None:
+    """
+    Register a model with capabilities or update if already exists
+    """
+    with SessionLocal() as session:
+        model = session.query(ModelEntry).filter_by(name=model_name).first()
+
+        if model:
+            model.capabilities = capabilities
+        else:
+            model = ModelEntry(
+                name=model_name,
+                created=datetime.utcnow().date(),
+                capabilities=capabilities,
+                description=""
+            )
+            session.add(model)
+
+        session.commit()
