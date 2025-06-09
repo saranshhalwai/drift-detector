@@ -1,4 +1,4 @@
-# main.py
+# server.py
 import asyncio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -47,6 +47,44 @@ async def get_prompt(name: str, arguments: dict[str, str] | None = None) -> type
         ]
     )
 
+from mcp.server import Server
+import mcp.types as types
+
+# Assuming 'app' is your MCP Server instance
+
+async def sample(app: Server, messages: list[types.SamplingMessage]):
+    result = await app.request_context.session.create_message(
+        messages=messages,
+        max_tokens=300,
+        temperature=0.7
+    )
+    return result
+
+@app.list_tools()
+async def list_tools() -> list[types.Tool]:
+    return [
+        types.Tool(
+            name="init_diagnostics",
+            description="Run diagnostic questionnaire on the connected LLM.",
+            inputSchema={"model_name": "Name of the LLM model"},
+        )
+    ]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict[str, str] | None = None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    """
+    Initializes diagnostics by running the questionnaire on the connected LLM.
+    """
+    # You could fetch dynamic questions here if needed
+    questions = [
+        types.SamplingMessage(role="user", content=types.TextContent(type="text", text="What is the capital of France?")),
+        types.SamplingMessage(role="user", content=types.TextContent(type="text", text="Why is the sky blue?")),
+    ]
+
+    response = await sample(app, questions)
+
+    # Return the assistant’s message(s) back to the caller
+    return [types.TextContent(type="text", text=str(response.content))]
 
 # Main entrypoint
 async def main():
