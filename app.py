@@ -574,9 +574,9 @@ def calculate_drift(dropdown_value):
 
 
 def create_drift_chart(drift_history):
-    """Create drift chart from actual data"""
+    """Create drift chart from actual data with improved data handling"""
     try:
-        if not drift_history:
+        if not drift_history or len(drift_history) == 0:
             # Empty chart if no data
             fig = go.Figure()
             fig.add_annotation(
@@ -589,49 +589,99 @@ def create_drift_chart(drift_history):
             fig.update_layout(
                 title='Model Drift Over Time - No Data',
                 template='plotly_white',
-                height=400
+                height=400,
+                xaxis_title='Date',
+                yaxis_title='Drift Score (%)'
             )
             return fig
+
+        print(f"🔍 DEBUG: Processing {len(drift_history)} drift records")
 
         # Extract dates and scores from actual data
         dates = []
         scores = []
 
-        for entry in drift_history:
-            # Handle different date formats
-            date_str = entry.get("date", "")
-            if isinstance(date_str, str):
-                # Parse ISO format or other formats
-                try:
-                    from datetime import datetime
-                    if "T" in date_str:
-                        date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                    else:
-                        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-                    dates.append(date_obj.strftime("%Y-%m-%d"))
-                except:
-                    dates.append(date_str)
-            else:
-                dates.append(str(date_str))
+        for i, entry in enumerate(drift_history):
+            print(f"🔍 DEBUG: Processing entry {i}: {entry}")
 
-            # Handle drift score
-            score = entry.get("drift_score", 0)
+            # Handle different date formats
+            date_value = entry.get("date", entry.get("created_at", entry.get("timestamp", "")))
+
+            if date_value:
+                if isinstance(date_value, str):
+                    try:
+                        from datetime import datetime
+                        # Try different date formats
+                        if "T" in date_value:
+                            # ISO format with time
+                            date_obj = datetime.fromisoformat(date_value.replace("Z", "+00:00"))
+                            formatted_date = date_obj.strftime("%Y-%m-%d")
+                        elif "-" in date_value and len(date_value) >= 10:
+                            # YYYY-MM-DD format
+                            date_obj = datetime.strptime(date_value[:10], "%Y-%m-%d")
+                            formatted_date = date_obj.strftime("%Y-%m-%d")
+                        else:
+                            # Use as-is if can't parse
+                            formatted_date = str(date_value)[:10]
+                    except Exception as date_error:
+                        print(f"⚠️ Date parsing error for '{date_value}': {date_error}")
+                        formatted_date = f"Entry {i + 1}"
+                else:
+                    # Handle datetime objects
+                    try:
+                        formatted_date = date_value.strftime("%Y-%m-%d")
+                    except:
+                        formatted_date = str(date_value)
+            else:
+                formatted_date = f"Entry {i + 1}"
+
+            dates.append(formatted_date)
+
+            # Handle drift score - try multiple possible field names
+            score = entry.get("drift_score", entry.get("score", entry.get("drift", 0)))
+
             if isinstance(score, str):
                 try:
                     score = float(score)
-                except:
+                except ValueError:
+                    print(f"⚠️ Could not convert score '{score}' to float, using 0")
                     score = 0
-            scores.append(score)
+            elif score is None:
+                score = 0
 
+            # Convert decimal to percentage if needed
+            if isinstance(score, (int, float)):
+                if 0 <= score <= 1:
+                    score = score * 100  # Convert decimal to percentage
+                score = max(0, min(100, score))  # Clamp between 0-100
+            else:
+                score = 0
+
+            scores.append(score)
+            print(f"🔍 DEBUG: Added point - Date: {formatted_date}, Score: {score}")
+
+        print(f"🔍 DEBUG: Final data - Dates: {dates}, Scores: {scores}")
+
+        if len(dates) == 0 or len(scores) == 0:
+            raise ValueError("No valid data points found")
+
+        # Create the plot
         fig = go.Figure()
+
+        # Add the main drift line
         fig.add_trace(go.Scatter(
             x=dates,
             y=scores,
             mode='lines+markers',
             name='Drift Score',
             line=dict(color='#ff6b6b', width=3),
-            marker=dict(size=8, color='#ff6b6b'),
-            hovertemplate='<b>Date:</b> %{x}<br><b>Drift Score:</b> %{y}%<extra></extra>'
+            marker=dict(
+                size=10,
+                color='#ff6b6b',
+                line=dict(width=2, color='white')
+            ),
+            hovertemplate='<b>Date:</b> %{x}<br><b>Drift Score:</b> %{y:.1f}%<extra></extra>',
+            connectgaps=True  # Connect points even if there are gaps
         ))
 
         # Add threshold line at 50%
@@ -639,55 +689,110 @@ def create_drift_chart(drift_history):
             y=50,
             line_dash="dash",
             line_color="orange",
-            annotation_text="Drift Threshold (50%)"
+            line_width=2,
+            annotation_text="Alert Threshold (50%)",
+            annotation_position="bottom right"
         )
 
+        # Add another threshold at 75% for critical level
+        fig.add_hline(
+            y=75,
+            line_dash="dot",
+            line_color="red",
+            line_width=2,
+            annotation_text="Critical Threshold (75%)",
+            annotation_position="top right"
+        )
+
+        # Update layout with better formatting
         fig.update_layout(
-            title=f'Model Drift Over Time ({len(drift_history)} records)',
+            title=f'Model Drift Over Time ({len(drift_history)} data points)',
             xaxis_title='Date',
             yaxis_title='Drift Score (%)',
             template='plotly_white',
-            height=400,
+            height=450,
             showlegend=True,
-            yaxis=dict(range=[0, 100])  # Set Y-axis range from 0 to 100%
+            yaxis=dict(
+                range=[0, 100],  # Set Y-axis range from 0 to 100%
+                ticksuffix='%'
+            ),
+            xaxis=dict(
+                tickangle=45 if len(dates) > 5 else 0,  # Angle labels for many dates
+                type='category'  # Treat dates as categories for better spacing
+            ),
+            hovermode='x unified',  # Better hover experience
+            margin=dict(b=100)  # More bottom margin for angled labels
         )
+
+        # Add grid for better readability
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='lightgray')
 
         return fig
 
     except Exception as e:
         print(f"❌ Error creating drift chart: {e}")
-        # Return empty chart on error
+        print(f"❌ Drift history data: {drift_history}")
+
+        # Return error chart
         fig = go.Figure()
         fig.add_annotation(
-            text=f"Error creating chart: {str(e)}",
+            text=f"Error creating chart:\n{str(e)}\n\nCheck console for details",
             xref="paper", yref="paper",
             x=0.5, y=0.5,
             showarrow=False,
-            font=dict(size=14, color="red")
+            font=dict(size=14, color="red"),
+            align="center"
         )
         fig.update_layout(
             title='Error Creating Drift Chart',
             template='plotly_white',
-            height=400
+            height=400,
+            xaxis_title='Date',
+            yaxis_title='Drift Score (%)'
         )
         return fig
+
+
+def debug_drift_data(drift_history):
+    """Helper function to debug drift history data structure"""
+    print("🔍 DEBUG: Drift History Analysis")
+    print(f"Type: {type(drift_history)}")
+    print(f"Length: {len(drift_history) if drift_history else 0}")
+
+    if drift_history:
+        for i, entry in enumerate(drift_history[:3]):  # Show first 3 entries
+            print(f"Entry {i}: {entry}")
+            print(f"  Keys: {list(entry.keys()) if isinstance(entry, dict) else 'Not a dict'}")
+
+    return drift_history
+
+
 def refresh_drift_history(dropdown_value):
-    """Refresh drift history - using actual database"""
+    """Refresh drift history with improved debugging"""
     if not dropdown_value:
         return [], gr.update(value=None)
 
     try:
         model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+        print(f"🔍 DEBUG: Getting drift history for model: {model_name}")
 
         if not DATABASE_AVAILABLE:
-            # Mock data for demo mode only
-            history = [
-                {"date": "2024-01-01", "drift_score": 25},
-                {"date": "2024-01-02", "drift_score": 30},
-                {"date": "2024-01-03", "drift_score": 45},
-                {"date": "2024-01-04", "drift_score": 35},
-                {"date": "2024-01-05", "drift_score": 40}
-            ]
+            # Enhanced mock data for demo mode
+            from datetime import datetime, timedelta
+            base_date = datetime.now() - timedelta(days=10)
+
+            history = []
+            for i in range(6):  # Create 6 data points
+                date_obj = base_date + timedelta(days=i * 2)
+                score = 20 + (i * 15) + (i % 2 * 10)  # Varied scores: 20, 45, 50, 75, 70, 95
+                history.append({
+                    "date": date_obj.strftime("%Y-%m-%d"),
+                    "drift_score": min(95, score),  # Cap at 95
+                    "model_name": model_name
+                })
+
+            print(f"🔍 DEBUG: Generated {len(history)} mock drift records")
         else:
             # Get actual drift history from database
             history_result = get_drift_history_handler({"model_name": model_name})
@@ -699,13 +804,19 @@ def refresh_drift_history(dropdown_value):
                 history = []
                 print(f"⚠️ No drift history found for {model_name}")
 
+        # Debug the data structure
+        history = debug_drift_data(history)
+
+        # Create chart
         chart = create_drift_chart(history)
+
         return history, chart
 
     except Exception as e:
         print(f"❌ Error refreshing drift history: {e}")
+        import traceback
+        traceback.print_exc()
         return [], gr.update(value=None)
-
 
 def initialize_interface():
     """Initialize interface"""
