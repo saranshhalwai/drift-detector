@@ -3,8 +3,10 @@ from typing import List
 import mcp.types as types
 from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv
+import os
 # Load environment variables from .env file
 load_dotenv()
+print("GROQ_API_KEY is set:", "GROQ_API_KEY" in os.environ)
 
 llm = init_chat_model("llama-3.1-8b-instant",model_provider='groq')
 

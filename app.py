@@ -2,9 +2,7 @@ import os
 import gradio as gr
 import asyncio
 from typing import Optional, List, Dict
-from contextlib import AsyncExitStack
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp_agent.core.fastagent import FastAgent
 
 from database_module.db import SessionLocal
 from database_module.models import ModelEntry
@@ -12,8 +10,8 @@ from langchain.chat_models import init_chat_model
 # Modify imports section to include all required tools
 from database_module import (
     init_db, 
-    # get_all_models_handler, 
-    # search_models_handler,
+    get_all_models_handler,
+    search_models_handler,
     # save_model_handler,
     # get_model_details_handler,
     # calculate_drift_handler,
@@ -27,66 +25,30 @@ import plotly.graph_objects as go
 # Create tables and register MCP handlers
 init_db()
 
+# Fast Agent client initialization - This is the "scapegoat" client whose drift we're detecting
+fast = FastAgent("Scapegoat Client")
 
-# Ensure server.py imports and registers these tools:
-#   app.register_tool("get_all_models", get_all_models_handler)
-#   app.register_tool("search_models", search_models_handler)
+@fast.agent(
+    name="scapegoat",
+    instruction="You are a test client whose drift will be detected and measured over time",
+    servers=["drift-server"]
+)
+async def setup_agent():
+    # This function defines the scapegoat agent that will be monitored for drift
+    pass
 
-# Replace the existing MCP client class with this updated version
-class MCPClient:
-    def __init__(self):
-        self.session: Optional[ClientSession] = None
-        self.exit_stack = AsyncExitStack()
+# Global scapegoat client instance to be monitored for drift
+scapegoat_client = None
 
-    async def connect_to_server(self, server_script_path: str = "server.py"):
-        """Connect to MCP server"""
-        try:
-            server_params = StdioServerParameters(
-                command="python",
-                args=[server_script_path],
-                env=None
-            )
-            stdio_transport = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            self.stdio, self.write = stdio_transport
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(self.stdio, self.write)
-            )
-            await self.session.initialize()
-            
-            # Get available tools from server
-            tools_response = await self.session.list_tools()
-            available_tools = [t.name for t in tools_response.tools]
-            print("Connected to server with tools:", available_tools)
-            
-            return True
-        except Exception as e:
-            print(f"Failed to connect to MCP server: {e}")
-            return False
-
-    async def call_tool(self, tool_name: str, arguments: dict):
-        """Call a tool on the MCP server"""
-        if not self.session:
-            raise RuntimeError("Not connected to MCP server")
-        try:
-            response = await self.session.call_tool(tool_name, arguments)
-            return response.content
-        except Exception as e:
-            print(f"Error calling tool {tool_name}: {e}")
-            raise
-
-    async def close(self):
-        """Close the MCP client connection"""
-        if self.session:
-            await self.exit_stack.aclose()
-
-
-# Global MCP client instance
-mcp_client = MCPClient()
-
-
-# Helper to run async functions
+# Initialize the scapegoat client that will be tested for drift
+async def initialize_scapegoat_client():
+    global scapegoat_client
+    print("Initializing scapegoat client for drift monitoring...")
+    async with fast.run() as agent:
+        scapegoat_client = agent
+        return agent
+        
+# Helper to run async functions with FastAgent
 def run_async(coro):
     try:
         loop = asyncio.get_running_loop()
@@ -102,10 +64,15 @@ def run_async(coro):
 def run_initial_diagnostics(model_name: str, capabilities: str):
     """Run initial diagnostics for a new model"""
     try:
-        result = run_async(mcp_client.call_tool("run_initial_diagnostics", {
-            "model": model_name,
-            "model_capabilities": capabilities
-        }))
+        # Use FastAgent's send method with a formatted message to call the tool
+        message = f"""Please call the run_initial_diagnostics tool with the following parameters:
+        model: {model_name}
+        model_capabilities: {capabilities}
+        
+        This tool will generate and store baseline diagnostics for the model.
+        """
+
+        result = run_async(scapegoat_client(message))
         return result
     except Exception as e:
         print(f"Error running diagnostics: {e}")
@@ -114,9 +81,14 @@ def run_initial_diagnostics(model_name: str, capabilities: str):
 def check_model_drift(model_name: str):
     """Check drift for existing model"""
     try:
-        result = run_async(mcp_client.call_tool("check_drift", {
-            "model": model_name
-        }))
+        # Use FastAgent's send method with a formatted message to call the tool
+        message = f"""Please call the check_drift tool with the following parameters:
+        model: {model_name}
+        
+        This tool will re-run diagnostics and compare to baseline for drift scoring.
+        """
+
+        result = run_async(scapegoat_client(message))
         return result
     except Exception as e:
         print(f"Error checking drift: {e}")
@@ -125,19 +97,32 @@ def check_model_drift(model_name: str):
 # Initialize MCP connection on startup
 def initialize_mcp_connection():
     try:
-        run_async(mcp_client.connect_to_server())
-        print("Successfully connected to MCP server")
+        run_async(initialize_scapegoat_client())
+        print("Successfully connected scapegoat client to MCP server")
         return True
     except Exception as e:
-        print(f"Failed to connect to MCP server: {e}")
+        print(f"Failed to connect scapegoat client to MCP server: {e}")
         return False
 
 
 # Wrapper functions remain unchanged but now call real DB-backed MCP tools
 def get_models_from_db():
+    """Get all models from database using direct function call"""
     try:
-        result = run_async(mcp_client.call_tool("get_all_models", {}))
-        return result if isinstance(result, list) else []
+        # Direct function call to database_module instead of using MCP
+        result = get_all_models_handler({})
+
+        if result:
+            # Format the result to match the expected structure
+            return [
+                {
+                    "name": model["name"],
+                    "description": model.get("description", ""),
+                    "created": model.get("created", datetime.now().strftime("%Y-%m-%d"))
+                }
+                for model in result
+            ]
+        return []
     except Exception as e:
         print(f"Error getting models: {e}")
         return []
@@ -148,12 +133,28 @@ def get_available_model_names():
 
 
 def search_models_in_db(search_term: str):
+    """Search models in database using direct function call"""
     try:
-        result = run_async(mcp_client.call_tool("search_models", {"search_term": search_term}))
-        return result if isinstance(result, list) else []
+        # Direct function call to database_module instead of using MCP
+        result = search_models_handler({"search_term": search_term})
+
+        if result:
+            # Format the result to match the expected structure
+            return [
+                {
+                    "name": model["name"],
+                    "description": model.get("description", ""),
+                    "created": model.get("created", datetime.now().strftime("%Y-%m-%d"))
+                }
+                for model in result
+            ]
+        # If no results, return empty list
+        return []
     except Exception as e:
         print(f"Error searching models: {e}")
+        # Fallback to filtering from all models if there's an error
         return [m for m in get_models_from_db() if search_term.lower() in m["name"].lower()]
+
 def format_dropdown_items(models):
     """Format dropdown items to show model name, creation date, and description preview"""
     formatted_items = []
@@ -172,49 +173,96 @@ def extract_model_name_from_dropdown(dropdown_value, model_mapping):
     return model_mapping.get(dropdown_value, dropdown_value.split(" (")[0] if dropdown_value else "")
 
 def get_model_details(model_name: str):
-    """Get model details from database via MCP"""
+    """Get model details from database via direct DB access (fallback)"""
     try:
-        result = run_async(mcp_client.call_tool("get_model_details", {"model_name": model_name}))
-        return result
+        with SessionLocal() as session:
+            model_entry = session.query(ModelEntry).filter_by(name=model_name).first()
+            if model_entry:
+                return {
+                    "name": model_entry.name,
+                    "description": model_entry.description or "",
+                    "system_prompt": model_entry.capabilities.split("\nSystem Prompt: ")[1] if "\nSystem Prompt: " in model_entry.capabilities else "",
+                    "created": model_entry.created.strftime("%Y-%m-%d %H:%M:%S") if model_entry.created else ""
+                }
+            return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": ""}
     except Exception as e:
         print(f"Error getting model details: {e}")
         return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": ""}
 
 def enhance_prompt_via_mcp(prompt: str):
-    """Enhance prompt using MCP server"""
-    try:
-        result = run_async(mcp_client.call_tool("enhance_prompt", {"prompt": prompt}))
-        return result.get("enhanced_prompt", prompt)
-    except Exception as e:
-        print(f"Error enhancing prompt: {e}")
-        return f"Enhanced: {prompt}\n\nAdditional context: Be more specific, helpful, and provide detailed responses while maintaining a professional tone."
+    """Enhance prompt locally since enhance_prompt tool is not available in server.py"""
+    # Provide a basic prompt enhancement functionality since server doesn't have it
+    enhanced_prompts = {
+        "helpful": f"{prompt}\n\nPlease be thorough, helpful, and provide detailed responses.",
+        "concise": f"{prompt}\n\nPlease provide concise, direct answers.",
+        "technical": f"{prompt}\n\nPlease provide technically accurate and comprehensive responses.",
+    }
+
+    if "helpful" in prompt.lower():
+        return enhanced_prompts["helpful"]
+    elif "concise" in prompt.lower() or "brief" in prompt.lower():
+        return enhanced_prompts["concise"]
+    elif "technical" in prompt.lower() or "detailed" in prompt.lower():
+        return enhanced_prompts["technical"]
+    else:
+        return f"{prompt}\n\nAdditional context: Be specific, helpful, and provide detailed responses while maintaining a professional tone."
 
 def save_model_to_db(model_name: str, system_prompt: str):
-    """Save model to database via MCP"""
+    """Save model to database directly since save_model tool is not available in server.py"""
     try:
-        result = run_async(mcp_client.call_tool("save_model", {
-            "model_name": model_name,
-            "system_prompt": system_prompt
-        }))
-        return result.get("message", "Model saved successfully!")
+        # Check if model already exists
+        with SessionLocal() as session:
+            existing = session.query(ModelEntry).filter_by(name=model_name).first()
+            if existing:
+                # Update capabilities to include the new system prompt
+                capabilities = existing.capabilities
+                if "\nSystem Prompt: " in capabilities:
+                    # Replace the system prompt part
+                    parts = capabilities.split("\nSystem Prompt: ")
+                    capabilities = f"{parts[0]}\nSystem Prompt: {system_prompt}"
+                else:
+                    # Add system prompt if not present
+                    capabilities = f"{capabilities}\nSystem Prompt: {system_prompt}"
+
+                existing.capabilities = capabilities
+                existing.updated = datetime.now()
+                session.commit()
+                return {"message": f"Updated existing model: {model_name}"}
+            else:
+                # Should not happen as models are registered with capabilities before calling this function
+                return {"message": f"Model {model_name} not found. Please register it first."}
     except Exception as e:
         print(f"Error saving model: {e}")
-        return f"Error saving model: {e}"
+        return {"message": f"Error saving model: {e}"}
 
 def get_drift_history_from_db(model_name: str):
-    """Get drift history from database via MCP"""
+    """Get drift history from database directly without any fallbacks"""
     try:
-        result = run_async(mcp_client.call_tool("get_drift_history", {"model_name": model_name}))
-        return result if isinstance(result, list) else []
-    except Exception as e:
-        print(f"Error getting drift history: {e}")
-        # Fallback data for demonstration
-        return [
-            {"date": "2025-06-01", "drift_score": 0.12},
-            {"date": "2025-06-05", "drift_score": 0.18},
-            {"date": "2025-06-09", "drift_score": 0.15}
-        ]
+        from database_module.models import DriftEntry
 
+        with SessionLocal() as session:
+            # Query the drift_history table for this model
+            drift_entries = session.query(DriftEntry).filter(
+                DriftEntry.model_name == model_name
+            ).order_by(DriftEntry.date.desc()).all()
+
+            # If no entries found, return empty list
+            if not drift_entries:
+                return []
+
+            # Convert to the expected format
+            history = []
+            for entry in drift_entries:
+                history.append({
+                    "date": entry.date.strftime("%Y-%m-%d"),
+                    "drift_score": float(entry.drift_score),
+                    "model": entry.model_name
+                })
+
+            return history
+    except Exception as e:
+        print(f"Error getting drift history from database: {e}")
+        return []  # Return empty list on error, no fallbacks
 def create_drift_chart(drift_history):
     """Create drift chart using plotly"""
     if not drift_history:
