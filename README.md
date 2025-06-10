@@ -8,7 +8,13 @@ sdk_version: 5.33.0
 app_file: app.py
 pinned: false
 license: mit
+tags: 
+- mcp-server-track
+- agent-demo-track
 ---
+
+This was made with the combined efforts of Saransh Halwai(HF username: [Sars6](https://huggingface.co/Sars6)), Harsh Bhati(HF username: [HarshBhati](https://huggingface.co/HarshBhati)), and Anurag Prasad(HF username: [LegendXInfinity](https://huggingface.co/LegendXInfinity))
+GitHub repo: [Drift Detector](github.com/saranshhalwai/drift-detector)
 
 # Drift Detector
 Drift Detector is an MCP server, designed to detect drift in LLM performance over time by using the power of the **sampling** functionality of MCP. 
