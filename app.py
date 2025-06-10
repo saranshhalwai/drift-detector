@@ -438,22 +438,14 @@ def initialize_interface():
     global current_model_mapping
     current_model_mapping = model_mapping
     
-    # Available LLM choices for new model creation
-    llm_choices = [
-        "gemini-1.0-pro",
-        "gemini-1.5-pro", 
-        "groq-llama-3.1-8b-instant",
-        "groq-mixtral-8x7b",
-        "groq-gpt4"
-    ]
-    
     return (
         formatted_items,  # model_dropdown choices
         formatted_items[0] if formatted_items else None,  # model_dropdown value
-        llm_choices,  # new_llm choices
+        "",  # new_model_name - should be empty string, not choices
         formatted_items[0].split(" (")[0] if formatted_items else "",  # selected_model_display
         formatted_items[0].split(" (")[0] if formatted_items else ""   # drift_model_display
     )
+
 
 # Create Gradio interface
 with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
@@ -640,7 +632,13 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
     # Initialize interface on load
     demo.load(
         initialize_interface,
-        outputs=[model_dropdown, model_dropdown, new_model_name, selected_model_display, drift_model_display]
+        outputs=[
+            model_dropdown,  # dropdown choices
+            model_dropdown,  # dropdown value
+            new_model_name,  # textbox for new model name (empty string)
+            selected_model_display,
+            drift_model_display
+        ]
     )
 
 if __name__ == "__main__":
