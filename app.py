@@ -298,6 +298,23 @@ def enhance_prompt(original_prompt):
         gr.update(visible=True)
     ]
 
+def register_model_with_capabilities(model_name: str, capabilities: str):
+    """Register a new model with its capabilities in the database"""
+    try:
+        with SessionLocal() as session:
+            model_entry = ModelEntry(
+                name=model_name,
+                capabilities=capabilities,
+                created=datetime.now()
+            )
+            session.add(model_entry)
+            session.commit()
+            return True
+    except Exception as e:
+        print(f"Error registering model: {e}")
+        return False
+
+
 def save_new_model(selected_model_name, selected_llm, original_prompt, enhanced_prompt, choice):
     """Save new model to database"""
     if not selected_model_name or not original_prompt.strip() or not selected_llm:
@@ -565,8 +582,8 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
     
     # Create new model functionality
     def show_create_new():
-        available_models = get_available_model_names()
-        return gr.update(visible=True), gr.update(choices=available_models)
+        """Show the create new model section"""
+        return gr.update(visible=True), gr.update(value="") 
     
     create_new_button.click(
         show_create_new,
@@ -587,10 +604,10 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
     
     # Save model
     save_model_button.click(
-        save_new_model,
-        inputs=[new_model_name, new_system_prompt, enhanced_prompt_display, prompt_choice],
-        outputs=[save_status, save_status, model_dropdown]
-    )
+    save_new_model,
+    inputs=[new_model_name, new_llm, new_system_prompt, enhanced_prompt_display, prompt_choice],
+    outputs=[save_status, save_status, model_dropdown]
+)
     
     # Chatbot functionality
     send_button.click(
