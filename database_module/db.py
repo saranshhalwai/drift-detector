@@ -1,4 +1,4 @@
-#database_module/db.py
+# database_module/db.py
 import os
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.ext.declarative import declarative_base
@@ -26,20 +26,29 @@ SessionLocal = sessionmaker(
 )
 Base = declarative_base()
 
+
 def apply_migrations():
     """
     Apply any necessary migrations to existing tables.
     """
     with engine.connect() as conn:
-        # Check if the models table exists and has the capabilities column
+        # Check if the models table exists and has the required columns
         inspector = inspect(engine)
         if "models" in inspector.get_table_names():
             columns = [col['name'] for col in inspector.get_columns('models')]
+
+            # Add capabilities column if missing
             if "capabilities" not in columns:
-                # Add capabilities column to models table
                 conn.execute(text("ALTER TABLE models ADD COLUMN capabilities TEXT"))
                 conn.commit()
                 print("Migration: Added capabilities column to models table")
+
+            # Add updated column if missing
+            if "updated" not in columns:
+                conn.execute(text("ALTER TABLE models ADD COLUMN updated DATETIME"))
+                conn.commit()
+                print("Migration: Added updated column to models table")
+
 
 def init_db():
     """

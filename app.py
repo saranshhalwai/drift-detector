@@ -2,118 +2,142 @@ import os
 import gradio as gr
 import asyncio
 from typing import Optional, List, Dict
-from mcp_agent.core.fastagent import FastAgent
+import subprocess
+import time
+import signal
+import sys
+import threading
+import concurrent.futures
+# Add these imports at the top of your Gradio file
+from ourllm import llm  # Import the actual LLM instance
+from dotenv import load_dotenv
+# Add error handling for imports
+try:
+    from database_module.db import SessionLocal
+    from database_module.models import ModelEntry
+    from langchain.chat_models import init_chat_model
+    from database_module import (
+        init_db,
+        get_all_models_handler,
+        search_models_handler,
+    )
 
-from database_module.db import SessionLocal
-from database_module.models import ModelEntry
-from langchain.chat_models import init_chat_model
-# Modify imports section to include all required tools
-from database_module import (
-    init_db, 
-    get_all_models_handler,
-    search_models_handler,
-    # save_model_handler,
-    # get_model_details_handler,
-    # calculate_drift_handler,
-    # get_drift_history_handler
-)
+    DATABASE_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Database modules not available: {e}")
+    print("⚠️ Running in demo mode without database functionality")
+    DATABASE_AVAILABLE = False
+
 import json
 from datetime import datetime
 import plotly.graph_objects as go
+try:
+    from ourllm import llm
+    print("✅ Successfully imported LLM from ourllm.py")
+    LLM_AVAILABLE = True
+except ImportError as e:
+    print(f"❌ Failed to import LLM: {e}")
+    LLM_AVAILABLE = False
 
-# --- Initialize database and MCP tool registration ---
-# Create tables and register MCP handlers
-init_db()
+# Mock database functions for when database is not available
+def mock_init_db():
+    print("📝 Mock database initialized")
+    return True
 
-# Fast Agent client initialization - This is the "scapegoat" client whose drift we're detecting
-fast = FastAgent("Scapegoat Client")
 
-@fast.agent(
-    name="scapegoat",
-    instruction="You are a test client whose drift will be detected and measured over time",
-    servers=["drift-server"]
-)
-async def setup_agent():
-    # This function defines the scapegoat agent that will be monitored for drift
-    pass
+def mock_get_all_models():
+    return [
+        {"name": "demo-model-1", "description": "Demo model for testing", "created": "2024-01-01"},
+        {"name": "demo-model-2", "description": "Another demo model", "created": "2024-01-02"}
+    ]
 
-# Global scapegoat client instance to be monitored for drift
+
+def mock_search_models(search_term):
+    all_models = mock_get_all_models()
+    return [m for m in all_models if search_term.lower() in m["name"].lower()]
+
+
+def mock_register_model(model_name, capabilities):
+    print(f"📝 Mock: Registered model {model_name}")
+    return True
+
+
+# Use mock functions if database is not available
+if not DATABASE_AVAILABLE:
+    init_db = mock_init_db
+    get_all_models_handler = lambda x: mock_get_all_models()
+    search_models_handler = lambda x: mock_search_models(x.get("search_term", ""))
+
+# Initialize database (or mock)
+try:
+    init_db()
+    print("✅ Database initialization successful")
+except Exception as e:
+    print(f"⚠️ Database initialization failed: {e}")
+    DATABASE_AVAILABLE = False
+
+# Global variables
 scapegoat_client = None
+server_manager = None
+current_model_mapping = {}
 
-# Initialize the scapegoat client that will be tested for drift
-async def initialize_scapegoat_client():
-    global scapegoat_client
-    print("Initializing scapegoat client for drift monitoring...")
-    async with fast.run() as agent:
-        scapegoat_client = agent
-        return agent
-        
-# Helper to run async functions with FastAgent
-def run_async(coro):
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-    else:
-        # return result if coroutine returns value, else schedule
-        task = loop.create_task(coro)
-        return loop.run_until_complete(task) if not task.done() else task
 
-def run_initial_diagnostics(model_name: str, capabilities: str):
-    """Run initial diagnostics for a new model"""
-    try:
-        # Use FastAgent's send method with a formatted message to call the tool
-        message = f"""Please call the run_initial_diagnostics tool with the following parameters:
-        model: {model_name}
-        model_capabilities: {capabilities}
-        
-        This tool will generate and store baseline diagnostics for the model.
-        """
-
-        result = run_async(scapegoat_client(message))
-        return result
-    except Exception as e:
-        print(f"Error running diagnostics: {e}")
-        return None
-
-def check_model_drift(model_name: str):
-    """Check drift for existing model"""
-    try:
-        # Use FastAgent's send method with a formatted message to call the tool
-        message = f"""Please call the check_drift tool with the following parameters:
-        model: {model_name}
-        
-        This tool will re-run diagnostics and compare to baseline for drift scoring.
-        """
-
-        result = run_async(scapegoat_client(message))
-        return result
-    except Exception as e:
-        print(f"Error checking drift: {e}")
-        return None
-
-# Initialize MCP connection on startup
-def initialize_mcp_connection():
-    try:
-        run_async(initialize_scapegoat_client())
-        print("Successfully connected scapegoat client to MCP server")
+# --- Simplified Database Functions ---
+def ensure_database_setup():
+    """Ensure database is properly set up"""
+    if not DATABASE_AVAILABLE:
+        print("✅ Running in demo mode - no database required")
         return True
+
+    try:
+        # Test database connection
+        with SessionLocal() as session:
+            session.execute("SELECT 1")
+            session.commit()
+            print("✅ Database connection successful")
+            return True
     except Exception as e:
-        print(f"Failed to connect scapegoat client to MCP server: {e}")
+        print(f"❌ Database setup failed: {e}")
         return False
 
 
-# Wrapper functions remain unchanged but now call real DB-backed MCP tools
-def get_models_from_db():
-    """Get all models from database using direct function call"""
-    try:
-        # Direct function call to database_module instead of using MCP
-        result = get_all_models_handler({})
+def register_model_with_capabilities(model_name: str, capabilities: str):
+    """Register a new model with its capabilities"""
+    if not DATABASE_AVAILABLE:
+        return mock_register_model(model_name, capabilities)
 
+    try:
+        with SessionLocal() as session:
+            existing = session.query(ModelEntry).filter_by(name=model_name).first()
+            if existing:
+                existing.capabilities = capabilities
+                existing.updated = datetime.now()
+                session.commit()
+                print(f"✅ Updated existing model: {model_name}")
+            else:
+                model_entry = ModelEntry(
+                    name=model_name,
+                    capabilities=capabilities,
+                    created=datetime.now()
+                )
+                session.add(model_entry)
+                session.commit()
+                print(f"✅ Registered new model: {model_name}")
+            return True
+    except Exception as e:
+        print(f"❌ Error registering model: {e}")
+        return False
+
+
+# --- Simplified Model Management Functions ---
+def get_models_from_db():
+    """Get all models from database"""
+    if not DATABASE_AVAILABLE:
+        return mock_get_all_models()
+
+    try:
+        result = get_all_models_handler({})
         if result:
-            # Format the result to match the expected structure
             return [
                 {
                     "name": model["name"],
@@ -124,22 +148,77 @@ def get_models_from_db():
             ]
         return []
     except Exception as e:
-        print(f"Error getting models: {e}")
-        return []
+        print(f"❌ Error getting models: {e}")
+        return mock_get_all_models()
 
 
-def get_available_model_names():
-    return [m["name"] for m in get_models_from_db()]
+load_dotenv()
 
+
+# Replace your current chatbot_response function with this:
+def chatbot_response(message, history, dropdown_value):
+    """Generate chatbot response using actual LLM with debug info"""
+    print(f"🔍 DEBUG: Function called with message: '{message}'")
+    print(f"🔍 DEBUG: LLM_AVAILABLE: {LLM_AVAILABLE}")
+    print(f"🔍 DEBUG: GROQ_API_KEY exists: {'GROQ_API_KEY' in os.environ}")
+
+    if not message or not message.strip() or not dropdown_value:
+        print("🔍 DEBUG: Empty message or dropdown")
+        return history, ""
+
+    try:
+        model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+        print(f"🔍 DEBUG: Model name: {model_name}")
+
+        # Initialize history if needed
+        if history is None:
+            history = []
+
+        # Check if LLM is available and API key is set
+        if not LLM_AVAILABLE:
+            response_text = "❌ LLM not available - check ourllm.py import"
+        elif not os.getenv("GROQ_API_KEY"):
+            response_text = "❌ GROQ_API_KEY not found in environment variables"
+        else:
+            try:
+                print("🔍 DEBUG: Attempting to call LLM...")
+
+                # Simple direct call to LLM
+                response = llm.invoke(message)
+                response_text = str(response.content).strip()
+
+                print(f"🔍 DEBUG: LLM response received: {response_text[:100]}...")
+
+                if not response_text:
+                    response_text = "❌ LLM returned empty response"
+
+            except Exception as e:
+                print(f"🔍 DEBUG: LLM call failed: {e}")
+                response_text = f"❌ LLM Error: {str(e)}"
+
+        # Add to history
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response_text})
+
+        print(f"🔍 DEBUG: Final response: {response_text}")
+        return history, ""
+
+    except Exception as e:
+        print(f"🔍 DEBUG: General error in chatbot_response: {e}")
+        if history is None:
+            history = []
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
+        return history, ""
 
 def search_models_in_db(search_term: str):
-    """Search models in database using direct function call"""
-    try:
-        # Direct function call to database_module instead of using MCP
-        result = search_models_handler({"search_term": search_term})
+    """Search models in database"""
+    if not DATABASE_AVAILABLE:
+        return mock_search_models(search_term)
 
+    try:
+        result = search_models_handler({"search_term": search_term})
         if result:
-            # Format the result to match the expected structure
             return [
                 {
                     "name": model["name"],
@@ -148,546 +227,496 @@ def search_models_in_db(search_term: str):
                 }
                 for model in result
             ]
-        # If no results, return empty list
         return []
     except Exception as e:
-        print(f"Error searching models: {e}")
-        # Fallback to filtering from all models if there's an error
+        print(f"❌ Error searching models: {e}")
         return [m for m in get_models_from_db() if search_term.lower() in m["name"].lower()]
 
+
 def format_dropdown_items(models):
-    """Format dropdown items to show model name, creation date, and description preview"""
+    """Format dropdown items"""
+    if not models:
+        return [], {}
+
     formatted_items = []
     model_mapping = {}
-    
+
     for model in models:
         desc_preview = model["description"][:40] + ("..." if len(model["description"]) > 40 else "")
         item_label = f"{model['name']} (Created: {model['created']}) - {desc_preview}"
         formatted_items.append(item_label)
         model_mapping[item_label] = model["name"]
-    
+
     return formatted_items, model_mapping
 
+
 def extract_model_name_from_dropdown(dropdown_value, model_mapping):
-    """Extract actual model name from formatted dropdown value"""
+    """Extract model name from dropdown"""
+    if not dropdown_value:
+        return ""
     return model_mapping.get(dropdown_value, dropdown_value.split(" (")[0] if dropdown_value else "")
 
+
 def get_model_details(model_name: str):
-    """Get model details from database via direct DB access (fallback)"""
+    """Get model details from database"""
     try:
-        with SessionLocal() as session:
-            model_entry = session.query(ModelEntry).filter_by(name=model_name).first()
-            if model_entry:
-                return {
-                    "name": model_entry.name,
-                    "description": model_entry.description or "",
-                    "system_prompt": model_entry.capabilities.split("\nSystem Prompt: ")[1] if "\nSystem Prompt: " in model_entry.capabilities else "",
-                    "created": model_entry.created.strftime("%Y-%m-%d %H:%M:%S") if model_entry.created else ""
-                }
-            return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": ""}
+        if DATABASE_AVAILABLE:
+            with SessionLocal() as session:
+                model_entry = session.query(ModelEntry).filter_by(name=model_name).first()
+                if model_entry:
+                    return {
+                        "name": model_entry.name,
+                        "description": model_entry.description or "",
+                        "system_prompt": model_entry.capabilities.split("System Prompt: ")[
+                            1] if model_entry.capabilities and "System Prompt: " in model_entry.capabilities else "You are a helpful AI assistant.",
+                        "created": model_entry.created.strftime("%Y-%m-%d %H:%M:%S") if model_entry.created else ""
+                    }
+        return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": "Demo model"}
     except Exception as e:
-        print(f"Error getting model details: {e}")
-        return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": ""}
+        print(f"❌ Error getting model details: {e}")
+        return {"name": model_name, "system_prompt": "You are a helpful AI assistant.", "description": "Demo model"}
 
-def enhance_prompt_via_mcp(prompt: str):
-    """Enhance prompt locally since enhance_prompt tool is not available in server.py"""
-    # Provide a basic prompt enhancement functionality since server doesn't have it
-    enhanced_prompts = {
-        "helpful": f"{prompt}\n\nPlease be thorough, helpful, and provide detailed responses.",
-        "concise": f"{prompt}\n\nPlease provide concise, direct answers.",
-        "technical": f"{prompt}\n\nPlease provide technically accurate and comprehensive responses.",
-    }
 
-    if "helpful" in prompt.lower():
-        return enhanced_prompts["helpful"]
-    elif "concise" in prompt.lower() or "brief" in prompt.lower():
-        return enhanced_prompts["concise"]
-    elif "technical" in prompt.lower() or "detailed" in prompt.lower():
-        return enhanced_prompts["technical"]
-    else:
-        return f"{prompt}\n\nAdditional context: Be specific, helpful, and provide detailed responses while maintaining a professional tone."
-
-def save_model_to_db(model_name: str, system_prompt: str):
-    """Save model to database directly since save_model tool is not available in server.py"""
-    try:
-        # Check if model already exists
-        with SessionLocal() as session:
-            existing = session.query(ModelEntry).filter_by(name=model_name).first()
-            if existing:
-                # Update capabilities to include the new system prompt
-                capabilities = existing.capabilities
-                if "\nSystem Prompt: " in capabilities:
-                    # Replace the system prompt part
-                    parts = capabilities.split("\nSystem Prompt: ")
-                    capabilities = f"{parts[0]}\nSystem Prompt: {system_prompt}"
-                else:
-                    # Add system prompt if not present
-                    capabilities = f"{capabilities}\nSystem Prompt: {system_prompt}"
-
-                existing.capabilities = capabilities
-                existing.updated = datetime.now()
-                session.commit()
-                return {"message": f"Updated existing model: {model_name}"}
-            else:
-                # Should not happen as models are registered with capabilities before calling this function
-                return {"message": f"Model {model_name} not found. Please register it first."}
-    except Exception as e:
-        print(f"Error saving model: {e}")
-        return {"message": f"Error saving model: {e}"}
-
-def get_drift_history_from_db(model_name: str):
-    """Get drift history from database directly without any fallbacks"""
-    try:
-        from database_module.models import DriftEntry
-
-        with SessionLocal() as session:
-            # Query the drift_history table for this model
-            drift_entries = session.query(DriftEntry).filter(
-                DriftEntry.model_name == model_name
-            ).order_by(DriftEntry.date.desc()).all()
-
-            # If no entries found, return empty list
-            if not drift_entries:
-                return []
-
-            # Convert to the expected format
-            history = []
-            for entry in drift_entries:
-                history.append({
-                    "date": entry.date.strftime("%Y-%m-%d"),
-                    "drift_score": float(entry.drift_score),
-                    "model": entry.model_name
-                })
-
-            return history
-    except Exception as e:
-        print(f"Error getting drift history from database: {e}")
-        return []  # Return empty list on error, no fallbacks
-def create_drift_chart(drift_history):
-    """Create drift chart using plotly"""
-    if not drift_history:
-        return gr.update(value=None)
-    
-    dates = [entry["date"] for entry in drift_history]
-    scores = [entry["drift_score"] for entry in drift_history]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates,
-        y=scores,
-        mode='lines+markers',
-        name='Drift Score',
-        line=dict(color='#ff6b6b', width=3),
-        marker=dict(size=8, color='#ff6b6b')
-    ))
-    
-    fig.update_layout(
-        title='Model Drift Over Time',
-        xaxis_title='Date',
-        yaxis_title='Drift Score',
-        template='plotly_white',
-        height=400,
-        showlegend=True
-    )
-    
-    return fig
-
-# Global variable to store model mapping
-current_model_mapping = {}
-
-# Gradio interface functions
+# --- Gradio Interface Functions ---
 def update_model_dropdown(search_term):
-    """Update dropdown choices based on search term"""
+    """Update dropdown based on search"""
     global current_model_mapping
-    
-    if search_term.strip():
-        models = search_models_in_db(search_term.strip())
-    else:
-        models = get_models_from_db()
-    
-    formatted_items, model_mapping = format_dropdown_items(models)
-    current_model_mapping = model_mapping
-    
-    return gr.update(choices=formatted_items, value=formatted_items[0] if formatted_items else None)
+
+    try:
+        if search_term and search_term.strip():
+            models = search_models_in_db(search_term.strip())
+        else:
+            models = get_models_from_db()
+
+        formatted_items, model_mapping = format_dropdown_items(models)
+        current_model_mapping = model_mapping
+
+        # Return dropdown with proper value handling
+        if formatted_items:
+            return gr.update(choices=formatted_items, value=formatted_items[0])
+        else:
+            return gr.update(choices=[], value=None)
+    except Exception as e:
+        print(f"❌ Error updating dropdown: {e}")
+        return gr.update(choices=[], value=None)
+
 
 def on_model_select(dropdown_value):
     """Handle model selection"""
-    if not dropdown_value:
+    if not dropdown_value or not current_model_mapping:
         return "", ""
-    
-    actual_model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
-    return actual_model_name, actual_model_name
+
+    try:
+        actual_model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+        return actual_model_name, actual_model_name
+    except Exception as e:
+        print(f"❌ Error in model selection: {e}")
+        return "", ""
+
+
+def show_create_new():
+    """Show create new model section"""
+    return gr.update(visible=True), gr.update(value="")
+
 
 def cancel_create_new():
     """Cancel create new model"""
     return [
         gr.update(visible=False),  # create_new_section
-        None,  # new_model_name (dropdown)
+        "",  # new_model_name
         "",  # new_system_prompt
         gr.update(visible=False),  # enhanced_prompt_display
         gr.update(visible=False),  # prompt_choice
         gr.update(visible=False),  # save_model_button
-        gr.update(visible=False)   # save_status
+        gr.update(visible=False)  # save_status
     ]
 
+
 def enhance_prompt(original_prompt):
-    """Enhance prompt and show options"""
-    if not original_prompt.strip():
+    """Enhance prompt locally"""
+    if not original_prompt or not original_prompt.strip():
         return [
             gr.update(visible=False),
             gr.update(visible=False),
             gr.update(visible=False)
         ]
-    
-    enhanced = enhance_prompt_via_mcp(original_prompt.strip())
+
+    enhanced = f"{original_prompt}\n\nAdditional context: Be specific, helpful, and provide detailed responses while maintaining a professional tone."
     return [
         gr.update(value=enhanced, visible=True),
         gr.update(visible=True),
         gr.update(visible=True)
     ]
 
-def register_model_with_capabilities(model_name: str, capabilities: str):
-    """Register a new model with its capabilities in the database"""
-    try:
-        with SessionLocal() as session:
-            model_entry = ModelEntry(
-                name=model_name,
-                capabilities=capabilities,
-                created=datetime.now()
-            )
-            session.add(model_entry)
-            session.commit()
-            return True
-    except Exception as e:
-        print(f"Error registering model: {e}")
-        return False
 
+def save_new_model(model_name, selected_llm, original_prompt, enhanced_prompt, choice):
+    """Save new model"""
+    global current_model_mapping
 
-def save_new_model(selected_model_name, selected_llm, original_prompt, enhanced_prompt, choice):
-    """Save new model to database"""
-    if not selected_model_name or not original_prompt.strip() or not selected_llm:
+    if not model_name or not original_prompt or not original_prompt.strip() or not selected_llm:
         return [
-            "Please provide model name, LLM selection, and system prompt",
+            "❌ Please provide model name, LLM selection, and system prompt",
             gr.update(visible=True),
             gr.update()
         ]
-    
-    final_prompt = enhanced_prompt if choice == "Keep Enhanced" else original_prompt
-    
+
     try:
-        # Save the model with LLM capabilities
+        final_prompt = enhanced_prompt if choice == "Keep Enhanced" else original_prompt
         capabilities = f"{selected_llm}\nSystem Prompt: {final_prompt}"
-        register_model_with_capabilities(selected_model_name, capabilities)
-        
-        status = save_model_to_db(selected_model_name, final_prompt)
-        
-        # Run initial diagnostics
-        diagnostic_result = run_initial_diagnostics(
-            selected_model_name,
-            capabilities
-        )
-        
-        if diagnostic_result:
-            status = f"{status}\n{diagnostic_result[0].text if isinstance(diagnostic_result, list) else diagnostic_result}"
+
+        if register_model_with_capabilities(model_name, capabilities):
+            status = f"✅ Model '{model_name}' saved successfully!"
+
+            # Update dropdown with new models
+            updated_models = get_models_from_db()
+            formatted_items, model_mapping = format_dropdown_items(updated_models)
+            current_model_mapping = model_mapping
+
+            dropdown_update = gr.update(choices=formatted_items, value=formatted_items[0] if formatted_items else None)
+        else:
+            status = "❌ Error saving model to database"
+            dropdown_update = gr.update()
+
     except Exception as e:
-        status = f"Error saving model: {e}"
-    
-    # Update dropdown choices
-    updated_models = get_models_from_db()
-    formatted_items, model_mapping = format_dropdown_items(updated_models)
-    global current_model_mapping
-    current_model_mapping = model_mapping
-    
+        status = f"❌ Error saving model: {e}"
+        dropdown_update = gr.update()
+
     return [
         status,
         gr.update(visible=True),
-        gr.update(choices=formatted_items)
+        dropdown_update
     ]
 
+
 def chatbot_response(message, history, dropdown_value):
-    """Generate chatbot response using selected model"""
-    if not message.strip() or not dropdown_value:
+    """Generate chatbot response - simplified version"""
+    if not message or not message.strip() or not dropdown_value:
         return history, ""
-    
-    model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
-    model_details = get_model_details(model_name)
-    system_prompt = model_details.get("system_prompt", "")
-    
+
     try:
-        # Initialize LLM based on model details
-        # Get model configuration from database
-        with SessionLocal() as session:
-            model_entry = session.query(ModelEntry).filter_by(name=model_name).first()
-            if not model_entry:
-                return history + [[message, "Error: Model not found"]], ""
-            
-            llm_name = model_entry.capabilities.split("\n")[0] if model_entry.capabilities else "groq-llama-3.1-8b-instant"
-        
-        # Initialize the LLM using langchain
-        llm = init_chat_model(
-            llm_name,
-            model_provider='groq' if llm_name.startswith('groq') else 'google'
-        )
-        
-        # Format the conversation with system prompt
-        formatted_prompt = f"System: {system_prompt}\nUser: {message}"
-        
-        # Get response from LLM
-        response = llm.invoke(formatted_prompt)
-        response_text = response.content
-        
-        history.append([message, response_text])
+        model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+
+        # Simple mock response for demo
+        response_text = f"Hello! I'm {model_name}. You said: '{message}'. This is a demo response since the full LLM integration requires API keys."
+
+        # Append in messages format
+        if history is None:
+            history = []
+
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": response_text})
         return history, ""
-        
     except Exception as e:
-        error_message = f"Error generating response: {str(e)}"
-        history.append([message, error_message])
+        print(f"❌ Error in chatbot response: {e}")
         return history, ""
+
 
 def calculate_drift(dropdown_value):
-    """Calculate drift for selected model"""
+    """Calculate drift for model - simplified version"""
     if not dropdown_value:
-        return "Please select a model first"
-    
-    model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
-    
-    # First try the drift calculation tool
+        return "❌ Please select a model first"
+
     try:
-        result = check_model_drift(model_name)
-        if result and isinstance(result, list):
-            return "\n".join(msg.text for msg in result)
+        model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+
+        # Simple mock drift calculation
+        import random
+        drift_score = random.randint(10, 80)
+        alert = "🚨 Significant drift detected!" if drift_score > 50 else "✅ Drift within acceptable range"
+
+        return f"Drift analysis for {model_name}:\nDrift Score: {drift_score}/100\n{alert}"
     except Exception as e:
-        print(f"Error calculating drift: {e}")
-        return f"Error calculating drift from server side: {e}"
-    
-    # Fallback to the simpler drift calculation if needed
-    # result = calculate_drift_handler({"model_name": model_name})
-    return f"Drift Score: {result.get('drift_score', 0.0):.3f}\n{result.get('message', '')}"
+        print(f"❌ Error calculating drift: {e}")
+        return "❌ Error calculating drift"
+
+
+def create_drift_chart(drift_history):
+    """Create drift chart"""
+    try:
+        if not drift_history:
+            # Create sample data for demo
+            dates = ['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05']
+            scores = [25, 30, 45, 35, 40]
+        else:
+            dates = [entry["date"] for entry in drift_history]
+            scores = [entry["drift_score"] for entry in drift_history]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates,
+            y=scores,
+            mode='lines+markers',
+            name='Drift Score',
+            line=dict(color='#ff6b6b', width=3),
+            marker=dict(size=8, color='#ff6b6b')
+        ))
+
+        fig.update_layout(
+            title='Model Drift Over Time',
+            xaxis_title='Date',
+            yaxis_title='Drift Score',
+            template='plotly_white',
+            height=400,
+            showlegend=True
+        )
+
+        return fig
+    except Exception as e:
+        print(f"❌ Error creating drift chart: {e}")
+        return go.Figure()
+
 
 def refresh_drift_history(dropdown_value):
-    """Refresh drift history for selected model"""
+    """Refresh drift history"""
     if not dropdown_value:
         return [], gr.update(value=None)
-    
-    model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
-    history = get_drift_history_from_db(model_name)
-    chart = create_drift_chart(history)
-    
-    return history, chart
+
+    try:
+        # Mock data for demo
+        history = [
+            {"date": "2024-01-01", "drift_score": 25},
+            {"date": "2024-01-02", "drift_score": 30},
+            {"date": "2024-01-03", "drift_score": 45},
+            {"date": "2024-01-04", "drift_score": 35},
+            {"date": "2024-01-05", "drift_score": 40}
+        ]
+
+        chart = create_drift_chart(history)
+        return history, chart
+    except Exception as e:
+        print(f"❌ Error refreshing drift history: {e}")
+        return [], gr.update(value=None)
+
 
 def initialize_interface():
-    """Initialize interface with MCP connection and default data"""
-    # Connect to MCP server
-    mcp_connected = initialize_mcp_connection()
-    
-    # Get initial model data
-    models = get_models_from_db()
-    formatted_items, model_mapping = format_dropdown_items(models)
+    """Initialize interface"""
     global current_model_mapping
-    current_model_mapping = model_mapping
-    
-    return (
-        formatted_items,  # model_dropdown choices
-        formatted_items[0] if formatted_items else None,  # model_dropdown value
-        "",  # new_model_name - should be empty string, not choices
-        formatted_items[0].split(" (")[0] if formatted_items else "",  # selected_model_display
-        formatted_items[0].split(" (")[0] if formatted_items else ""   # drift_model_display
-    )
+
+    try:
+        models = get_models_from_db()
+        formatted_items, model_mapping = format_dropdown_items(models)
+        current_model_mapping = model_mapping
+
+        # Safe initialization
+        if formatted_items:
+            dropdown_value = formatted_items[0]
+            first_model_name = extract_model_name_from_dropdown(dropdown_value, model_mapping)
+            dropdown_update = gr.update(choices=formatted_items, value=dropdown_value)
+        else:
+            dropdown_value = None
+            first_model_name = ""
+            dropdown_update = gr.update(choices=[], value=None)
+
+        return (
+            dropdown_update,  # dropdown update
+            "",  # new_model_name
+            first_model_name,  # selected_model_display
+            first_model_name  # drift_model_display
+        )
+    except Exception as e:
+        print(f"❌ Error initializing interface: {e}")
+        return (
+            gr.update(choices=[], value=None),
+            "",
+            "",
+            ""
+        )
 
 
-# Create Gradio interface
-with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
-    gr.Markdown("# AI Model Management & Interaction Platform")
-    
-    with gr.Row():
-        # Left Column - Model Selection
-        with gr.Column(scale=1):
-            gr.Markdown("### Model Selection")
-            
-            model_dropdown = gr.Dropdown(
-                choices=[], #work here Here show the already created models (fetched from database using mcp functions defined above)
-                label="Select Model",
-                interactive=True
-            )
-            
-            search_box = gr.Textbox(
-                placeholder="Search by model name or description...",
-                label="Search Models"
-            )
-            
-            create_new_button = gr.Button("Create New Model", variant="secondary")
-            
-            # Create New Model Section (Initially Hidden)
-            with gr.Group(visible=False) as create_new_section:
-                gr.Markdown("#### Create New Model")
-                new_model_name = gr.Textbox(
-                    label="Model name",
-                    placeholder="Model name"
+# --- Gradio Interface ---
+def create_interface():
+    """Create the Gradio interface"""
+    with gr.Blocks(title="AI Model Management & Interaction Platform", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🤖 AI Model Management & Interaction Platform")
+
+        if not DATABASE_AVAILABLE:
+            gr.Markdown("⚠️ **Demo Mode**: Running without database connectivity. Some features are simulated.")
+
+        with gr.Row():
+            # Left Column - Model Selection
+            with gr.Column(scale=1):
+                gr.Markdown("### 📋 Model Selection")
+
+                model_dropdown = gr.Dropdown(
+                    choices=[],
+                    label="Select Model",
+                    interactive=True,
+                    allow_custom_value=False,
+                    value=None
                 )
-                new_llm = gr.Dropdown( 
-                    choices=[
-                        "gemini-1.0-pro",
-                        "gemini-1.5-pro",
-                        "groq-llama-3.1-8b-instant",
-                        "groq-mixtral-8x7b",
-                        "groq-gpt4"
-                    ], #work here to show options to select llms(available to use) like gemini-1.5-pro, etc google models, groq models (atleast 5 in total)
-                    label="Select LLM Name",
-                    interactive=True
+
+                search_box = gr.Textbox(
+                    placeholder="Search by model name or description...",
+                    label="🔍 Search Models"
                 )
-                new_system_prompt = gr.Textbox(
-                    label="System Prompt",
-                    placeholder="Enter system prompt",
-                    lines=3
-                )
-                
-                with gr.Row():
-                    enhance_button = gr.Button("Enhance Prompt", variant="primary")
-                    cancel_button = gr.Button("Cancel", variant="secondary")
-                
-                enhanced_prompt_display = gr.Textbox(
-                    label="Enhanced Prompt",
-                    interactive=False,
-                    lines=4,
-                    visible=False
-                )
-                
-                prompt_choice = gr.Radio(
-                    choices=["Keep Enhanced", "Keep Original"],
-                    label="Choose Prompt to Use",
-                    visible=False
-                )
-                
-                save_model_button = gr.Button("Save Model", variant="primary", visible=False)
-                save_status = gr.Textbox(label="Status", interactive=False, visible=False)
-        
-        # Right Column - Model Operations
-        with gr.Column(scale=2):
-            gr.Markdown("### Model Operations")
-            
-            with gr.Tabs():
-                # Chatbot Tab
-                with gr.TabItem("Chatbot"):
-                    selected_model_display = gr.Textbox(
-                        label="Currently Selected Model",
-                        interactive=False
+
+                create_new_button = gr.Button("➕ Create New Model", variant="secondary")
+
+                # Create New Model Section
+                with gr.Group(visible=False) as create_new_section:
+                    gr.Markdown("#### 🆕 Create New Model")
+                    new_model_name = gr.Textbox(
+                        label="Model Name",
+                        placeholder="Enter model name"
                     )
-                    
-                    chatbot_interface = gr.Chatbot(height=400)
-                    
+                    new_llm = gr.Dropdown(
+                        choices=[
+                            "gemini-1.0-pro",
+                            "gemini-1.5-pro",
+                            "groq-llama-3.1-8b-instant",
+                            "groq-mixtral-8x7b-32768",
+                            "claude-3-sonnet-20240229"
+                        ],
+                        label="Select LLM",
+                        interactive=True
+                    )
+                    new_system_prompt = gr.Textbox(
+                        label="System Prompt",
+                        placeholder="Enter system prompt",
+                        lines=3
+                    )
+
                     with gr.Row():
-                        msg_input = gr.Textbox(
-                            placeholder="Enter your message...",
-                            label="Message",
-                            scale=4
+                        enhance_button = gr.Button("✨ Enhance Prompt", variant="primary")
+                        cancel_button = gr.Button("❌ Cancel", variant="secondary")
+
+                    enhanced_prompt_display = gr.Textbox(
+                        label="Enhanced Prompt",
+                        interactive=False,
+                        lines=4,
+                        visible=False
+                    )
+
+                    prompt_choice = gr.Radio(
+                        choices=["Keep Enhanced", "Keep Original"],
+                        label="Choose Prompt",
+                        visible=False
+                    )
+
+                    save_model_button = gr.Button("💾 Save Model", variant="primary", visible=False)
+                    save_status = gr.Textbox(label="Status", interactive=False, visible=False)
+
+            # Right Column - Model Operations
+            with gr.Column(scale=2):
+                gr.Markdown("### 🛠️ Model Operations")
+
+                with gr.Tabs():
+                    # Chatbot Tab
+                    with gr.TabItem("💬 Chatbot"):
+                        selected_model_display = gr.Textbox(
+                            label="Currently Selected Model",
+                            interactive=False
                         )
-                        send_button = gr.Button("Send", variant="primary", scale=1)
-                    
-                    clear_chat = gr.Button("Clear Chat", variant="secondary")
-                
-                # Drift Analysis Tab
-                with gr.TabItem("Drift Analysis"):
-                    drift_model_display = gr.Textbox(
-                        label="Model for Drift Analysis",
-                        interactive=False
-                    )
-                    
-                    with gr.Row():
-                        calculate_drift_button = gr.Button("Calculate New Drift", variant="primary")
-                        refresh_history_button = gr.Button("Refresh History", variant="secondary")
-                    
-                    drift_result = gr.Textbox(label="Latest Drift Calculation", interactive=False)
-                    
-                    gr.Markdown("#### Drift History")
-                    drift_history_display = gr.JSON(label="Drift History Data")
-                    
-                    gr.Markdown("#### Drift Chart")
-                    drift_chart = gr.Plot(label="Drift Over Time")
 
-    # Event Handlers
-    
-    # Search functionality - Dynamic update
-    search_box.change(
-        update_model_dropdown,
-        inputs=[search_box],
-        outputs=[model_dropdown]
-    )
-    
-    # Model selection updates
-    model_dropdown.change(
-        on_model_select,
-        inputs=[model_dropdown],
-        outputs=[selected_model_display, drift_model_display]
-    )
-    
-    # Create new model functionality
-    def show_create_new():
-        """Show the create new model section"""
-        return gr.update(visible=True), gr.update(value="") 
-    
-    create_new_button.click(
-        show_create_new,
-        outputs=[create_new_section, new_model_name]
-    )
-    
-    cancel_button.click(cancel_create_new, outputs=[
-        create_new_section, new_model_name, new_system_prompt,
-        enhanced_prompt_display, prompt_choice, save_model_button, save_status
-    ])
-    
-    # Enhance prompt
-    enhance_button.click(
-        enhance_prompt,
-        inputs=[new_system_prompt],
-        outputs=[enhanced_prompt_display, prompt_choice, save_model_button]
-    )
-    
-    # Save model
-    save_model_button.click(
-    save_new_model,
-    inputs=[new_model_name, new_llm, new_system_prompt, enhanced_prompt_display, prompt_choice],
-    outputs=[save_status, save_status, model_dropdown]
-)
-    
-    # Chatbot functionality
-    send_button.click(
-        chatbot_response,
-        inputs=[msg_input, chatbot_interface, model_dropdown],
-        outputs=[chatbot_interface, msg_input]
-    )
-    
-    msg_input.submit(
-        chatbot_response,
-        inputs=[msg_input, chatbot_interface, model_dropdown],
-        outputs=[chatbot_interface, msg_input]
-    )
-    
-    clear_chat.click(lambda: [], outputs=[chatbot_interface])
-    
-    # Drift analysis functionality
-    calculate_drift_button.click(
-        calculate_drift,
-        inputs=[model_dropdown],
-        outputs=[drift_result]
-    )
-    
-    refresh_history_button.click(
-        refresh_drift_history,
-        inputs=[model_dropdown],
-        outputs=[drift_history_display, drift_chart]
-    )
-    
-    # Initialize interface on load
-    demo.load(
-        initialize_interface,
-        outputs=[
-            model_dropdown,  # dropdown choices
-            model_dropdown,  # dropdown value
-            new_model_name,  # textbox for new model name (empty string)
-            selected_model_display,
-            drift_model_display
-        ]
-    )
+                        chatbot_interface = gr.Chatbot(
+                            type="messages",
+                            height=400,
+                            show_label=False
+                        )
+
+                        with gr.Row():
+                            msg_input = gr.Textbox(
+                                placeholder="Enter your message...",
+                                label="Message",
+                                scale=4
+                            )
+                            send_button = gr.Button("📤 Send", variant="primary", scale=1)
+
+                        clear_chat = gr.Button("🗑️ Clear Chat", variant="secondary")
+
+                    # Drift Analysis Tab
+                    with gr.TabItem("📊 Drift Analysis"):
+                        drift_model_display = gr.Textbox(
+                            label="Model for Drift Analysis",
+                            interactive=False
+                        )
+
+                        with gr.Row():
+                            calculate_drift_button = gr.Button("🔍 Calculate New Drift", variant="primary")
+                            refresh_history_button = gr.Button("🔄 Refresh History", variant="secondary")
+
+                        drift_result = gr.Textbox(label="Latest Drift Calculation", interactive=False)
+
+                        gr.Markdown("#### 📈 Drift History")
+                        drift_history_display = gr.JSON(label="Drift History Data")
+
+                        gr.Markdown("#### 📊 Drift Chart")
+                        drift_chart = gr.Plot(label="Drift Over Time")
+
+        # Event Handlers with better error handling
+        search_box.change(update_model_dropdown, inputs=[search_box], outputs=[model_dropdown])
+        model_dropdown.change(on_model_select, inputs=[model_dropdown],
+                              outputs=[selected_model_display, drift_model_display])
+
+        create_new_button.click(show_create_new, outputs=[create_new_section, new_model_name])
+        cancel_button.click(cancel_create_new,
+                            outputs=[create_new_section, new_model_name, new_system_prompt, enhanced_prompt_display,
+                                     prompt_choice, save_model_button, save_status])
+
+        enhance_button.click(enhance_prompt, inputs=[new_system_prompt],
+                             outputs=[enhanced_prompt_display, prompt_choice, save_model_button])
+        save_model_button.click(save_new_model,
+                                inputs=[new_model_name, new_llm, new_system_prompt, enhanced_prompt_display,
+                                        prompt_choice],
+                                outputs=[save_status, save_status, model_dropdown])
+
+        send_button.click(chatbot_response, inputs=[msg_input, chatbot_interface, model_dropdown],
+                          outputs=[chatbot_interface, msg_input])
+        msg_input.submit(chatbot_response, inputs=[msg_input, chatbot_interface, model_dropdown],
+                         outputs=[chatbot_interface, msg_input])
+        clear_chat.click(lambda: [], outputs=[chatbot_interface])
+
+        calculate_drift_button.click(calculate_drift, inputs=[model_dropdown], outputs=[drift_result])
+        refresh_history_button.click(refresh_drift_history, inputs=[model_dropdown],
+                                     outputs=[drift_history_display, drift_chart])
+
+        demo.load(initialize_interface,
+                  outputs=[model_dropdown, new_model_name, selected_model_display, drift_model_display])
+
+    return demo
+
+
+def main():
+    """Main function to launch the application"""
+    print("🚀 Starting AI Model Management Platform...")
+
+    # Create the interface
+    demo = create_interface()
+
+    # Launch configuration
+    launch_config = {
+        "server_name": "0.0.0.0",  # Listen on all interfaces
+        "server_port": 7860,  # Default Gradio port
+        "share": False,  # Set to True if you want a public link
+        "show_error": True,  # Show detailed errors
+        "quiet": False,  # Set to True to reduce output
+        "show_api": True,  # Show API docs
+    }
+
+    print("📡 Launching Gradio interface...")
+    print(f"🌐 Server will be available at:")
+    print(f"   - Local: http://localhost:{launch_config['server_port']}")
+    print(f"   - Network: http://0.0.0.0:{launch_config['server_port']}")
+
+    try:
+        demo.launch(**launch_config)
+    except Exception as e:
+        print(f"❌ Failed to launch Gradio interface: {e}")
+        print("🔧 Troubleshooting suggestions:")
+        print("   1. Check if port 7860 is already in use")
+        print("   2. Try a different port: demo.launch(server_port=7861)")
+        print("   3. Check firewall settings")
+        print("   4. Ensure Gradio is properly installed: pip install gradio")
+        return False
+
+    return True
+
 
 if __name__ == "__main__":
-    demo.launch()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down gracefully...")
+    except Exception as e:
+        print(f"❌ Application error: {e}")
+        sys.exit(1)

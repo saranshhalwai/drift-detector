@@ -8,16 +8,17 @@ class ModelEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, nullable=False, index=True)
-    created = Column(Date, nullable=False)
+    created = Column(DateTime, nullable=False, default=datetime.now)
+    updated = Column(DateTime, nullable=True)  # Added updated field
     description = Column(Text, nullable=True)
-    capabilities = Column(Text, nullable=True)  # Added to store model_capabilities
+    capabilities = Column(Text, nullable=True)  # Store model_capabilities
 
 class DriftEntry(Base):
     __tablename__ = "drift_history"
 
     id = Column(Integer, primary_key=True, index=True)
     model_name = Column(String, nullable=False, index=True)
-    date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    date = Column(DateTime, nullable=False, default=datetime.now)
     drift_score = Column(Float, nullable=True)
 
 class DiagnosticData(Base):
@@ -25,7 +26,7 @@ class DiagnosticData(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     model_name = Column(String, nullable=False, index=True)
-    created = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created = Column(DateTime, nullable=False, default=datetime.now)
     is_baseline = Column(Integer, nullable=False, default=0)  # 0=latest, 1=baseline
     questions = Column(JSON, nullable=True)
     answers = Column(JSON, nullable=True)

@@ -1,12 +1,16 @@
-mcp:
-  servers:
-    drift-server:
-      transport: stdio
-      command: "python"
-      args: ["server.py"]
+# fastagent.config.yaml
 
-default_model: "generic.llama3.1"
+servers:
+  drift-server:
+    transport: stdio
+    # Launch drift-server via Python in unbuffered mode so JSON‐RPC messages flow correctly
+    command: python
+    args:
+      - -u
+      - server.py
+
+# Your model defaults (unchanged)
+default_model: generic.llama3.1
 generic:
-  api_key: "ollama"  # doesn't matter, just a placeholder
-  base_url: "http://localhost:11434/v1"
-
+  api_key: ollama       # placeholder
+  base_url: http://localhost:11434/v1
