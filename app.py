@@ -6,6 +6,11 @@ import subprocess
 import time
 import signal
 import sys
+# Add these imports at the top of your Gradio file
+from database_module.mcp_tools import (
+    get_drift_history_handler,
+    calculate_drift_handler
+)
 import threading
 import concurrent.futures
 # Add these imports at the top of your Gradio file
@@ -388,6 +393,29 @@ def save_new_model(model_name, selected_llm, original_prompt, enhanced_prompt, c
     ]
 
 
+# Also add this function to help debug database connection:
+def test_database_connection():
+    """Test if database connection is working and has data"""
+    try:
+        if not DATABASE_AVAILABLE:
+            return "⚠️ Database not available - running in demo mode"
+
+        # Test getting models
+        models = get_all_models_handler({})
+        model_count = len(models) if models else 0
+
+        # Test getting drift history for first model if available
+        drift_info = ""
+        if models and len(models) > 0:
+            first_model = models[0]["name"]
+            drift_history = get_drift_history_handler({"model_name": first_model})
+            drift_count = len(drift_history) if drift_history else 0
+            drift_info = f"\n📊 Drift records for '{first_model}': {drift_count}"
+
+        return f"✅ Database connected\n📝 Total models: {model_count}{drift_info}"
+
+    except Exception as e:
+        return f"❌ Database test failed: {e}"
 # Replace the chatbot_response function in your Gradio file with this:
 
 def chatbot_response(message, history, dropdown_value):
@@ -471,20 +499,20 @@ def test_llm_connection():
 
 
 # Add this to your interface initialization to test LLM on startup:
-def initialize_interface():
-    """Initialize interface with LLM test"""
+# Add this to your interface initialization to show database status
+def initialize_interface_with_debug():
+    """Initialize interface with database debug info"""
     global current_model_mapping
 
-    # Test LLM first
-    llm_status = test_llm_connection()
-    print(f"🔍 LLM Status: {llm_status}")
+    # Test database connection
+    db_status = test_database_connection()
+    print(f"🔍 Database Status: {db_status}")
 
     try:
         models = get_models_from_db()
         formatted_items, model_mapping = format_dropdown_items(models)
         current_model_mapping = model_mapping
 
-        # Safe initialization
         if formatted_items:
             dropdown_value = formatted_items[0]
             first_model_name = extract_model_name_from_dropdown(dropdown_value, model_mapping)
@@ -495,10 +523,10 @@ def initialize_interface():
             dropdown_update = gr.update(choices=[], value=None)
 
         return (
-            dropdown_update,  # dropdown update
-            "",  # new_model_name
-            first_model_name,  # selected_model_display
-            first_model_name  # drift_model_display
+            dropdown_update,
+            "",
+            first_model_name,
+            first_model_name
         )
     except Exception as e:
         print(f"❌ Error initializing interface: {e}")
@@ -509,36 +537,91 @@ def initialize_interface():
             ""
         )
 
+# Replace your existing functions with these corrected versions:
 
 def calculate_drift(dropdown_value):
-    """Calculate drift for model - simplified version"""
+    """Calculate drift for model - using actual database"""
     if not dropdown_value:
         return "❌ Please select a model first"
 
     try:
         model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
 
-        # Simple mock drift calculation
-        import random
-        drift_score = random.randint(10, 80)
-        alert = "🚨 Significant drift detected!" if drift_score > 50 else "✅ Drift within acceptable range"
+        if not DATABASE_AVAILABLE:
+            # Fallback for demo mode
+            import random
+            drift_score = random.randint(10, 80)
+            alert = "🚨 Significant drift detected!" if drift_score > 50 else "✅ Drift within acceptable range"
+            return f"Drift analysis for {model_name}:\nDrift Score: {drift_score}/100\n{alert}"
 
-        return f"Drift analysis for {model_name}:\nDrift Score: {drift_score}/100\n{alert}"
+        # Use actual database function
+        result = calculate_drift_handler({"model_name": model_name})
+
+        if "drift_score" in result:
+            drift_score = result["drift_score"]
+            # Convert to percentage if it's a decimal
+            if isinstance(drift_score, float) and drift_score <= 1.0:
+                drift_score = int(drift_score * 100)
+
+            alert = "🚨 Significant drift detected!" if drift_score > 50 else "✅ Drift within acceptable range"
+            return f"Drift analysis for {model_name}:\nDrift Score: {drift_score}/100\n{alert}\n\n{result.get('message', '')}"
+        else:
+            return f"❌ Error calculating drift: {result.get('message', 'Unknown error')}"
+
     except Exception as e:
         print(f"❌ Error calculating drift: {e}")
-        return "❌ Error calculating drift"
+        return f"❌ Error calculating drift: {str(e)}"
 
 
 def create_drift_chart(drift_history):
-    """Create drift chart"""
+    """Create drift chart from actual data"""
     try:
         if not drift_history:
-            # Create sample data for demo
-            dates = ['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05']
-            scores = [25, 30, 45, 35, 40]
-        else:
-            dates = [entry["date"] for entry in drift_history]
-            scores = [entry["drift_score"] for entry in drift_history]
+            # Empty chart if no data
+            fig = go.Figure()
+            fig.add_annotation(
+                text="No drift data available",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False,
+                font=dict(size=16)
+            )
+            fig.update_layout(
+                title='Model Drift Over Time - No Data',
+                template='plotly_white',
+                height=400
+            )
+            return fig
+
+        # Extract dates and scores from actual data
+        dates = []
+        scores = []
+
+        for entry in drift_history:
+            # Handle different date formats
+            date_str = entry.get("date", "")
+            if isinstance(date_str, str):
+                # Parse ISO format or other formats
+                try:
+                    from datetime import datetime
+                    if "T" in date_str:
+                        date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    else:
+                        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+                    dates.append(date_obj.strftime("%Y-%m-%d"))
+                except:
+                    dates.append(date_str)
+            else:
+                dates.append(str(date_str))
+
+            # Handle drift score
+            score = entry.get("drift_score", 0)
+            if isinstance(score, str):
+                try:
+                    score = float(score)
+                except:
+                    score = 0
+            scores.append(score)
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -547,41 +630,78 @@ def create_drift_chart(drift_history):
             mode='lines+markers',
             name='Drift Score',
             line=dict(color='#ff6b6b', width=3),
-            marker=dict(size=8, color='#ff6b6b')
+            marker=dict(size=8, color='#ff6b6b'),
+            hovertemplate='<b>Date:</b> %{x}<br><b>Drift Score:</b> %{y}%<extra></extra>'
         ))
 
+        # Add threshold line at 50%
+        fig.add_hline(
+            y=50,
+            line_dash="dash",
+            line_color="orange",
+            annotation_text="Drift Threshold (50%)"
+        )
+
         fig.update_layout(
-            title='Model Drift Over Time',
+            title=f'Model Drift Over Time ({len(drift_history)} records)',
             xaxis_title='Date',
-            yaxis_title='Drift Score',
+            yaxis_title='Drift Score (%)',
             template='plotly_white',
             height=400,
-            showlegend=True
+            showlegend=True,
+            yaxis=dict(range=[0, 100])  # Set Y-axis range from 0 to 100%
         )
 
         return fig
+
     except Exception as e:
         print(f"❌ Error creating drift chart: {e}")
-        return go.Figure()
-
-
+        # Return empty chart on error
+        fig = go.Figure()
+        fig.add_annotation(
+            text=f"Error creating chart: {str(e)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=14, color="red")
+        )
+        fig.update_layout(
+            title='Error Creating Drift Chart',
+            template='plotly_white',
+            height=400
+        )
+        return fig
 def refresh_drift_history(dropdown_value):
-    """Refresh drift history"""
+    """Refresh drift history - using actual database"""
     if not dropdown_value:
         return [], gr.update(value=None)
 
     try:
-        # Mock data for demo
-        history = [
-            {"date": "2024-01-01", "drift_score": 25},
-            {"date": "2024-01-02", "drift_score": 30},
-            {"date": "2024-01-03", "drift_score": 45},
-            {"date": "2024-01-04", "drift_score": 35},
-            {"date": "2024-01-05", "drift_score": 40}
-        ]
+        model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+
+        if not DATABASE_AVAILABLE:
+            # Mock data for demo mode only
+            history = [
+                {"date": "2024-01-01", "drift_score": 25},
+                {"date": "2024-01-02", "drift_score": 30},
+                {"date": "2024-01-03", "drift_score": 45},
+                {"date": "2024-01-04", "drift_score": 35},
+                {"date": "2024-01-05", "drift_score": 40}
+            ]
+        else:
+            # Get actual drift history from database
+            history_result = get_drift_history_handler({"model_name": model_name})
+
+            if isinstance(history_result, list) and history_result:
+                history = history_result
+                print(f"✅ Retrieved {len(history)} drift records for {model_name}")
+            else:
+                history = []
+                print(f"⚠️ No drift history found for {model_name}")
 
         chart = create_drift_chart(history)
         return history, chart
+
     except Exception as e:
         print(f"❌ Error refreshing drift history: {e}")
         return [], gr.update(value=None)
