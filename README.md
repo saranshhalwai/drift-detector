@@ -157,3 +157,7 @@ Potential enhancements for the Drift Detector include:
 4. Advanced drift detection algorithms with explainability
 5. Multi-metric drift analysis (beyond a single drift score)
 6. User role-based access control for enterprise environments
+
+# Demo Video
+
+[![Drift Detector Demo](demowithoutmyvoice.mp4)]
