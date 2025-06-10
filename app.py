@@ -388,27 +388,126 @@ def save_new_model(model_name, selected_llm, original_prompt, enhanced_prompt, c
     ]
 
 
+# Replace the chatbot_response function in your Gradio file with this:
+
 def chatbot_response(message, history, dropdown_value):
-    """Generate chatbot response - simplified version"""
+    """Generate chatbot response using actual LLM"""
+    print(f"🔍 DEBUG: Function called with message: '{message}'")
+    print(f"🔍 DEBUG: LLM_AVAILABLE: {LLM_AVAILABLE}")
+    print(f"🔍 DEBUG: GROQ_API_KEY exists: {'GROQ_API_KEY' in os.environ}")
+
     if not message or not message.strip() or not dropdown_value:
+        print("🔍 DEBUG: Empty message or dropdown")
         return history, ""
 
     try:
         model_name = extract_model_name_from_dropdown(dropdown_value, current_model_mapping)
+        print(f"🔍 DEBUG: Model name: {model_name}")
 
-        # Simple mock response for demo
-        response_text = f"Hello! I'm {model_name}. You said: '{message}'. This is a demo response since the full LLM integration requires API keys."
-
-        # Append in messages format
+        # Initialize history if needed
         if history is None:
             history = []
 
+        # Check if LLM is available and API key is set
+        if not LLM_AVAILABLE:
+            response_text = "❌ LLM not available - check ourllm.py import"
+        elif not os.getenv("GROQ_API_KEY"):
+            response_text = "❌ GROQ_API_KEY not found in environment variables"
+        else:
+            try:
+                print("🔍 DEBUG: Attempting to call LLM...")
+
+                # Get model details to use system prompt if available
+                model_details = get_model_details(model_name)
+                system_prompt = model_details.get("system_prompt", "You are a helpful AI assistant.")
+
+                # Create a message with system context
+                full_message = f"System: {system_prompt}\n\nUser: {message}"
+
+                # Call the LLM
+                response = llm.invoke(full_message)
+                response_text = str(response.content).strip()
+
+                print(f"🔍 DEBUG: LLM response received: {response_text[:100]}...")
+
+                if not response_text:
+                    response_text = "❌ LLM returned empty response"
+
+            except Exception as e:
+                print(f"🔍 DEBUG: LLM call failed: {e}")
+                response_text = f"❌ LLM Error: {str(e)}"
+
+        # Add to history
         history.append({"role": "user", "content": message})
         history.append({"role": "assistant", "content": response_text})
+
+        print(f"🔍 DEBUG: Final response: {response_text}")
         return history, ""
+
     except Exception as e:
-        print(f"❌ Error in chatbot response: {e}")
+        print(f"🔍 DEBUG: General error in chatbot_response: {e}")
+        if history is None:
+            history = []
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
         return history, ""
+
+
+# Also add this helper function to test LLM connectivity:
+def test_llm_connection():
+    """Test if LLM is working properly"""
+    try:
+        if not LLM_AVAILABLE:
+            return "❌ LLM not imported"
+
+        if not os.getenv("GROQ_API_KEY"):
+            return "❌ GROQ_API_KEY not found"
+
+        # Test with a simple message
+        response = llm.invoke("Hello, please respond with 'LLM is working'")
+        return f"✅ LLM working: {response.content}"
+    except Exception as e:
+        return f"❌ LLM test failed: {e}"
+
+
+# Add this to your interface initialization to test LLM on startup:
+def initialize_interface():
+    """Initialize interface with LLM test"""
+    global current_model_mapping
+
+    # Test LLM first
+    llm_status = test_llm_connection()
+    print(f"🔍 LLM Status: {llm_status}")
+
+    try:
+        models = get_models_from_db()
+        formatted_items, model_mapping = format_dropdown_items(models)
+        current_model_mapping = model_mapping
+
+        # Safe initialization
+        if formatted_items:
+            dropdown_value = formatted_items[0]
+            first_model_name = extract_model_name_from_dropdown(dropdown_value, model_mapping)
+            dropdown_update = gr.update(choices=formatted_items, value=dropdown_value)
+        else:
+            dropdown_value = None
+            first_model_name = ""
+            dropdown_update = gr.update(choices=[], value=None)
+
+        return (
+            dropdown_update,  # dropdown update
+            "",  # new_model_name
+            first_model_name,  # selected_model_display
+            first_model_name  # drift_model_display
+        )
+    except Exception as e:
+        print(f"❌ Error initializing interface: {e}")
+        return (
+            gr.update(choices=[], value=None),
+            "",
+            "",
+            ""
+        )
 
 
 def calculate_drift(dropdown_value):
