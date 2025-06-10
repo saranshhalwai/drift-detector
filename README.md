@@ -68,6 +68,18 @@ Our GitHub repo consists of two main components:
 
 The gradio interface in [app.py](app.py) is an example dashboard which allows users to interact with the Drift Detector server and visualize drift data.
 
+### Database Integration
+
+The system uses SQLite (by default) to store:
+- Model information (name, capabilities, creation date)
+- Drift history (date and score for each drift calculation)
+- Diagnostic data (baseline and current questions/answers)
+
+This enables persistent tracking of model performance over time, allowing for:
+- Historical trend analysis
+- Comparison between different models
+- Early detection of performance degradation
+
 ### Drift Detector Server
 
 The Drift Detector server is implemented using the MCP python SDK.
@@ -105,13 +117,37 @@ The intended flow is as follows:
 1. When the client contacts the server for the first time, it will run the `run_initial_diagnostics` tool.
 2. The server will generate a tailored questionnaire based on the model's capabilities.
 3. This questionnaire will be used to collect responses from the model, establishing a baseline for future comparisons.
-4. Once the baseline is established, the server will store the paired question-answer JSON records.
+4. Once the baseline is established, the server will store the paired question-answer JSON records in the database.
 5. The client can then use the `check_drift` tool to measure potential drift in the model's performance.
 6. The server will retrieve the original questions from the baseline and re-sample the model with identical questions.
 7. The server will maintain consistent context conditions to ensure fair comparison.
 8. If significant drift is detected (score > 50), the server will provide an alert and store the latest sample responses for audit and trend analysis.
 9. The client can visualize the drift data through the Gradio interface, allowing users to track changes in model performance over time.
 
+## Drift History Visualization
 
+The system provides comprehensive visualization of drift history:
 
+1. **Historical Data**: Real drift history is now fetched from the database rather than using mock data
+2. **Interactive Charts**: Drift scores are plotted over time to identify trends
+3. **Threshold Indicators**: Visual indicators show when drift exceeds acceptable limits
+4. **Data Conversion**: Drift scores are normalized to percentages (0-100) for consistent display
+5. **Error Handling**: Robust error handling for missing or malformed data
 
+This real-time visualization allows users to:
+- Identify gradual performance degradation
+- Spot sudden changes in model behavior
+- Make informed decisions about model retraining or replacement
+- Compare drift patterns across different deployment environments
+
+## Future Improvements
+
+Potential enhancements for the Drift Detector include:
+1. A full mcp server hosted over the cloud.
+2. authentication and authorization for secure access.
+1. Support for multiple database backends (PostgreSQL, MySQL)
+2. Enhanced analytics and reporting features
+3. Integration with CI/CD pipelines for automated monitoring
+4. Advanced drift detection algorithms with explainability
+5. Multi-metric drift analysis (beyond a single drift score)
+6. User role-based access control for enterprise environments
