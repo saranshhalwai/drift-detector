@@ -5,6 +5,10 @@ from typing import Optional, List, Dict
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from database_module.db import SessionLocal
+from database_module.models import ModelEntry
+from langchain.chat_models import init_chat_model
 # Modify imports section to include all required tools
 from database_module import (
     init_db, 
@@ -294,11 +298,11 @@ def enhance_prompt(original_prompt):
         gr.update(visible=True)
     ]
 
-def save_new_model(selected_model_name, original_prompt, enhanced_prompt, choice):
+def save_new_model(selected_model_name, selected_llm, original_prompt, enhanced_prompt, choice):
     """Save new model to database"""
-    if not selected_model_name or not original_prompt.strip():
+    if not selected_model_name or not original_prompt.strip() or not selected_llm:
         return [
-            "Please select a model and enter a system prompt",
+            "Please provide model name, LLM selection, and system prompt",
             gr.update(visible=True),
             gr.update()
         ]
@@ -306,13 +310,16 @@ def save_new_model(selected_model_name, original_prompt, enhanced_prompt, choice
     final_prompt = enhanced_prompt if choice == "Keep Enhanced" else original_prompt
     
     try:
-        # Save the model first
+        # Save the model with LLM capabilities
+        capabilities = f"{selected_llm}\nSystem Prompt: {final_prompt}"
+        register_model_with_capabilities(selected_model_name, capabilities)
+        
         status = save_model_to_db(selected_model_name, final_prompt)
         
         # Run initial diagnostics
         diagnostic_result = run_initial_diagnostics(
             selected_model_name,
-            f"System Prompt: {final_prompt}\nCapabilities: General language model capabilities"
+            capabilities
         )
         
         if diagnostic_result:
@@ -333,7 +340,7 @@ def save_new_model(selected_model_name, original_prompt, enhanced_prompt, choice
     ]
 
 def chatbot_response(message, history, dropdown_value):
-    """Generate chatbot response"""
+    """Generate chatbot response using selected model"""
     if not message.strip() or not dropdown_value:
         return history, ""
     
@@ -341,10 +348,36 @@ def chatbot_response(message, history, dropdown_value):
     model_details = get_model_details(model_name)
     system_prompt = model_details.get("system_prompt", "")
     
-    # Simulate response (replace with actual LLM call) //Work here
-    response = f"[{model_name}] Response to: {message}\n(Using system prompt: {system_prompt[:50]}...)"
-    history.append([message, response])
-    return history, ""
+    try:
+        # Initialize LLM based on model details
+        # Get model configuration from database
+        with SessionLocal() as session:
+            model_entry = session.query(ModelEntry).filter_by(name=model_name).first()
+            if not model_entry:
+                return history + [[message, "Error: Model not found"]], ""
+            
+            llm_name = model_entry.capabilities.split("\n")[0] if model_entry.capabilities else "groq-llama-3.1-8b-instant"
+        
+        # Initialize the LLM using langchain
+        llm = init_chat_model(
+            llm_name,
+            model_provider='groq' if llm_name.startswith('groq') else 'google'
+        )
+        
+        # Format the conversation with system prompt
+        formatted_prompt = f"System: {system_prompt}\nUser: {message}"
+        
+        # Get response from LLM
+        response = llm.invoke(formatted_prompt)
+        response_text = response.content
+        
+        history.append([message, response_text])
+        return history, ""
+        
+    except Exception as e:
+        error_message = f"Error generating response: {str(e)}"
+        history.append([message, error_message])
+        return history, ""
 
 def calculate_drift(dropdown_value):
     """Calculate drift for selected model"""
@@ -388,13 +421,19 @@ def initialize_interface():
     global current_model_mapping
     current_model_mapping = model_mapping
     
-    # Get available model names for create new model dropdown
-    available_models = get_available_model_names()
+    # Available LLM choices for new model creation
+    llm_choices = [
+        "gemini-1.0-pro",
+        "gemini-1.5-pro", 
+        "groq-llama-3.1-8b-instant",
+        "groq-mixtral-8x7b",
+        "groq-gpt4"
+    ]
     
     return (
         formatted_items,  # model_dropdown choices
         formatted_items[0] if formatted_items else None,  # model_dropdown value
-        available_models,  # new_model_name choices
+        llm_choices,  # new_llm choices
         formatted_items[0].split(" (")[0] if formatted_items else "",  # selected_model_display
         formatted_items[0].split(" (")[0] if formatted_items else ""   # drift_model_display
     )
@@ -409,7 +448,7 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
             gr.Markdown("### Model Selection")
             
             model_dropdown = gr.Dropdown(
-                choices=[],
+                choices=[], #work here Here show the already created models (fetched from database using mcp functions defined above)
                 label="Select Model",
                 interactive=True
             )
@@ -424,10 +463,19 @@ with gr.Blocks(title="AI Model Management & Interaction Platform") as demo:
             # Create New Model Section (Initially Hidden)
             with gr.Group(visible=False) as create_new_section:
                 gr.Markdown("#### Create New Model")
-                #work here to show options to select model
-                new_model_name = gr.Dropdown(
-                    choices=[],
-                    label="Select Model Name",
+                new_model_name = gr.Textbox(
+                    label="Model name",
+                    placeholder="Model name"
+                )
+                new_llm = gr.Dropdown( 
+                    choices=[
+                        "gemini-1.0-pro",
+                        "gemini-1.5-pro",
+                        "groq-llama-3.1-8b-instant",
+                        "groq-mixtral-8x7b",
+                        "groq-gpt4"
+                    ], #work here to show options to select llms(available to use) like gemini-1.5-pro, etc google models, groq models (atleast 5 in total)
+                    label="Select LLM Name",
                     interactive=True
                 )
                 new_system_prompt = gr.Textbox(
